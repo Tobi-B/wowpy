@@ -37,7 +37,7 @@ Feature: MiP status panel
   Rule: Queried values are refreshed automatically while connected
 
     Scenario: Values are populated right after connecting
-      Given the mock robot answers 79 with "797C02", 16 with "1604", 82 with "8201", 85 with "85000000C8", 14 with "1417011B" and 19 with "190103"
+      Given the mock robot answers 79 with "797C02", 16 with "1604", 82 with "8201", 85 with "85000000C8", 14 with "1417011B01" and 19 with "190103"
       When I connect to "Mock MiP"
       Then within 2 seconds the status panel shows:
         | field            | value            |
@@ -47,7 +47,7 @@ Feature: MiP status panel
         | Game mode        | app              |
         | Odometer         | 200 cm           |
         | Software version | 2023-01-27 rev 1 |
-        | Hardware version | 1.3              |
+        | Hardware version | 1 (voice chip 3) |
 
     Scenario: Status is polled every 5 seconds
       Given I am connected to "Mock MiP"

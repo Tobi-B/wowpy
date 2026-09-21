@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiP dashboard</title>
+<style>
+  :root {
+    --bg: #14171c; --panel: #1e2229; --panel2: #262b34; --line: #333a45;
+    --fg: #e6e9ee; --muted: #8b95a5; --accent: #4da3ff; --ok: #3ddc84;
+    --warn: #ffb347; --bad: #ff5d5d; --sent: #4da3ff; --recv: #3ddc84; --info: #8b95a5;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); }
+  button { font: inherit; color: var(--fg); background: var(--panel2); border: 1px solid var(--line);
+           border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #08131f; border-color: var(--accent); font-weight: 600; }
+  input, select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+                  border-radius: 5px; padding: 4px 6px; }
+  input[type=number] { width: 5.5em; }
+  input.invalid { border-color: var(--bad); }
+  input[type=range] { width: 120px; padding: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+
+  /* sticky status panel */
+  #status { position: sticky; top: 0; z-index: 10; background: var(--panel); border-bottom: 1px solid var(--line);
+            padding: 10px 16px; display: grid; grid-template-columns: 1fr auto; gap: 12px 24px; align-items: start; }
+  #fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 16px; }
+  .field { display: flex; flex-direction: column; min-width: 0; }
+  .field .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .field .v { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .field.warn .v { color: var(--warn); }
+  .field.bad .v { color: var(--bad); }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; margin-top: 3px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--ok); }
+  .bar.low > i { background: var(--bad); }
+  .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--line); vertical-align: -2px; margin-right: 6px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--line); margin-right: 3px; }
+  .dot.on { background: var(--ok); }
+  .dot.blink { background: var(--ok); animation: blink 1s infinite; }
+  .dot.blinkfast { background: var(--ok); animation: blink .3s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  .bars { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; margin-right: 6px; }
+  .bars i { width: 4px; background: var(--line); }
+  .bars i.on { background: var(--ok); }
+  #conn { display: flex; flex-direction: column; gap: 6px; min-width: 260px; }
+  #conn .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #indicator { font-weight: 600; }
+  #indicator.connected { color: var(--ok); }
+  #indicator.connecting { color: var(--warn); }
+  #indicator.disconnected { color: var(--muted); }
+  #devices { min-width: 220px; }
+  #trend { grid-column: 1 / -1; }
+  #trend canvas { width: 100%; height: 110px; display: block; background: var(--bg); border-radius: 6px; border: 1px solid var(--line); }
+  #trend .legend { font-size: 11px; color: var(--muted); margin-top: 3px; display: flex; gap: 14px; }
+
+  main { display: grid; grid-template-columns: 1fr 380px; gap: 16px; padding: 16px; }
+  #panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; align-content: start; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .cmd { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 4px 0; border-top: 1px solid var(--line); }
+  .cmd:first-of-type { border-top: 0; }
+  .cmd > button { min-width: 130px; text-align: left; }
+  .cmd .op { color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; }
+  .param { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--muted); }
+  .param .msg { color: var(--bad); font-size: 11px; }
+  .param .range { font-size: 11px; }
+  #pad { display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(3, 44px); gap: 4px; margin: 6px 0; }
+  #pad button { font-size: 20px; padding: 0; user-select: none; touch-action: none; }
+  #pad button:active:not(:disabled) { background: var(--accent); color: #08131f; }
+  #pad [data-drive=up] { grid-area: 1 / 2; }
+  #pad [data-drive=left] { grid-area: 2 / 1; }
+  #pad [data-drive=right] { grid-area: 2 / 3; }
+  #pad [data-drive=down] { grid-area: 3 / 2; }
+  .sliders { display: flex; gap: 14px; font-size: 12px; color: var(--muted); align-items: center; flex-wrap: wrap; }
+
+  #logpanel { display: flex; flex-direction: column; height: calc(100vh - 220px); position: sticky; top: 190px; }
+  #logpanel .head { display: flex; justify-content: space-between; align-items: center; }
+  #log { flex: 1; overflow-y: auto; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; margin-top: 6px; }
+  .entry { display: grid; grid-template-columns: 90px 62px 1fr; gap: 6px; padding: 2px 0; border-top: 1px solid var(--line); align-items: baseline; }
+  .entry .ts { color: var(--muted); }
+  .entry .dir { font-weight: 600; text-transform: uppercase; font-size: 10px; }
+  .entry.sent .dir { color: var(--sent); }
+  .entry.received .dir { color: var(--recv); }
+  .entry.info .dir { color: var(--info); }
+  .entry.error .dir, .entry.timeout .dir { color: var(--bad); }
+  .entry .bytes { color: var(--muted); }
+  .entry .text { color: var(--fg); }
+  @media (max-width: 1000px) {
+    main { grid-template-columns: 1fr; }
+    #logpanel { height: 400px; position: static; }
+    #status { position: static; grid-template-columns: 1fr; }
+    #fields { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  }
+</style>
+</head>
+<body>
+
+<header id="status">
+  <div id="fields"></div>
+  <div id="conn">
+    <div class="row"><span id="indicator" class="disconnected">Disconnected</span><span id="address" style="color:var(--muted)"></span></div>
+    <div class="row">
+      <button id="scan">Scan</button>
+      <select id="devices"></select>
+      <button id="connect" class="primary">Connect</button>
+      <button id="disconnect" disabled>Disconnect</button>
+    </div>
+    <div class="row"><button id="refresh" disabled>Refresh now</button><span id="lastupdate" style="color:var(--muted)"></span></div>
+  </div>
+  <div id="trend">
+    <canvas id="chart" height="110"></canvas>
+    <div class="legend"><span>▬ battery %</span><span id="poslegend"></span><span style="margin-left:auto">last 60 min</span></div>
+  </div>
+</header>
+
+<main>
+  <section id="panels"></section>
+  <aside id="logpanel" class="panel">
+    <div class="head"><h2 style="margin:0">Log</h2><button id="clearlog">Clear log</button></div>
+    <div id="log"></div>
+  </aside>
+</main>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const el = (tag, attrs = {}, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") n.className = v; else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+      else if (v !== null && v !== undefined) n.setAttribute(k, v);
+    }
+    for (const k of kids) n.append(k);
+    return n;
+  };
+  const api = async (path, body, method = "POST") => {
+    const r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    if (!r.ok) { let d = ""; try { d = (await r.json()).detail; } catch {} throw new Error(d || r.statusText); }
+    return r.json();
+  };
+
+  // ---------------------------------------------------------------- state
+  let meta = null;             // /api/commands
+  let connected = false;
+  let connectedAt = null;
+  const status = {};
+  const trend = { battery: [], position: [] };   // [t, value]
+  const posChanges = [];       // timestamps of position changes
+  let lastPos = null;
+  let ws = null;
+
+  const POS_COLORS = { 0: "#ff5d5d", 1: "#ff8c42", 2: "#3ddc84", 3: "#4da3ff", 4: "#c77dff", 5: "#ffb347", 6: "#ff5da6" };
+  const BATTERY_WARN = 40;
+  const HINT = "Connect to a MiP first";
+
+  // ---------------------------------------------------------- status panel
+  const FIELDS = [
+    ["connection", "Connection"], ["signal", "Signal"], ["battery", "Battery"], ["position", "Position"],
+    ["poschanges", "Position changes / 5 s"], ["volume", "Volume"], ["game_mode", "Game mode"], ["odometer", "Odometer"],
+    ["chest_led", "Chest LED"], ["head_leds", "Head LEDs"], ["gesture_radar_mode", "Gesture / radar"], ["clap", "Clap detection"],
+    ["software_version", "Software version"], ["hardware_version", "Hardware version"],
+  ];
+  const fieldEls = {};
+  for (const [key, label] of FIELDS) {
+    const v = el("div", { class: "v" }, "—");
+    const f = el("div", { class: "field", "data-field": key }, el("div", { class: "k" }, label), v);
+    fieldEls[key] = f;
+    $("#fields").append(f);
+  }
+  const setField = (key, content, cls = "") => {
+    const f = fieldEls[key]; const v = $(".v", f);
+    v.replaceChildren(...(Array.isArray(content) ? content : [content]));
+    f.className = "field " + cls;
+  };
+
+  function renderStatus() {
+    const s = status;
+    if (!connected) { for (const [k] of FIELDS) if (k !== "connection") setField(k, "—"); return; }
+    if (s.battery !== undefined) {
+      const low = s.battery < BATTERY_WARN;
+      const bar = el("div", { class: "bar" + (low ? " low" : "") }, el("i", { style: `width:${s.battery}%` }));
+      const txt = el("span", {}, `${s.battery} %` + (low ? " " : ""));
+      const kids = [txt];
+      if (low) kids.push(el("span", { title: `MiP may not balance below ${BATTERY_WARN} %`, "data-warn": "battery" }, "⚠"));
+      kids.push(bar);
+      setField("battery", kids, low ? "bad" : "");
+    }
+    if (s.position !== undefined) {
+      const name = meta.positions[s.position] ?? `position ${s.position}`;
+      setField("position", name, (s.position === 0 || s.position === 1) ? "warn" : "");
+    }
+    if (s.volume !== undefined) setField("volume", String(s.volume));
+    if (s.game_mode !== undefined) setField("game_mode", meta.game_modes[s.game_mode] ?? String(s.game_mode));
+    if (s.odometer_cm !== undefined) {
+      const reset = el("button", { style: "margin-left:8px;padding:1px 6px;font-size:11px", onclick: () => run("Reset odometer", {}) }, "Reset");
+      setField("odometer", [`${s.odometer_cm} cm`, reset]);
+    }
+    if (s.chest_led) {
+      const [r, g, b] = s.chest_led;
+      setField("chest_led", [el("span", { class: "swatch", "data-rgb": `${r},${g},${b}`, style: `background:rgb(${r},${g},${b})` }), `rgb(${r}, ${g}, ${b})`]);
+    }
+    if (s.head_leds) {
+      const cls = { 0: "", 1: "on", 2: "blink", 3: "blinkfast" };
+      setField("head_leds", s.head_leds.map(st => el("span", { class: "dot " + (cls[st] ?? ""), title: meta.head_led_states[st] })));
+    }
+    if (s.gesture_radar_mode !== undefined) setField("gesture_radar_mode", meta.gesture_radar_modes[s.gesture_radar_mode] ?? String(s.gesture_radar_mode));
+    if (s.clap_enabled !== undefined) setField("clap", (s.clap_enabled ? "enabled" : "disabled") + (s.clap_delay_ms != null ? `, ${s.clap_delay_ms} ms` : ""));
+    if (s.software_version) setField("software_version", s.software_version);
+    if (s.hardware_version) setField("hardware_version", s.hardware_version);
+  }
+
+  function renderConnection(c) {
+    const ind = $("#indicator");
+    ind.className = c.state;
+    ind.textContent = c.state === "connected" ? `Connected to ${c.name}` : c.state === "connecting" ? "Connecting…" : "Disconnected";
+    $("#address").textContent = c.state !== "disconnected" && c.address ? c.address : "";
+    setField("connection", ind.textContent, c.state === "connected" ? "" : c.state === "connecting" ? "warn" : "");
+    if (c.rssi != null && c.state !== "disconnected") {
+      const n = c.rssi >= -60 ? 4 : c.rssi >= -70 ? 3 : c.rssi >= -80 ? 2 : c.rssi >= -90 ? 1 : 0;
+      const bars = el("span", { class: "bars", "data-bars": n }, ...[1, 2, 3, 4].map(i => el("i", { class: i <= n ? "on" : "", style: `height:${i * 3 + 2}px` })));
+      setField("signal", [bars, `${c.rssi} dBm`]);
+    } else setField("signal", c.state !== "disconnected" ? "n/a" : "—");
+    const was = connected;
+    connected = c.state === "connected";
+    if (connected && !was) { connectedAt = Date.now(); trend.battery.length = 0; trend.position.length = 0; posChanges.length = 0; lastPos = null; }
+    if (!connected) stopDrive(false);
+    document.querySelectorAll("[data-needs-connection]").forEach(b => { b.disabled = !connected || b.dataset.invalid === "1"; b.title = connected ? "" : HINT; });
+    $("#disconnect").disabled = !connected;
+    $("#refresh").disabled = !connected;
+    renderStatus();
+  }
+
+  function tickPosChanges() {
+    const now = Date.now();
+    while (posChanges.length && now - posChanges[0] > 5000) posChanges.shift();
+    const n = posChanges.length;
+    setField("poschanges", connected ? [String(n), n > 5 ? el("span", { title: "balance wobble – check batteries and gyro calibration", style: "margin-left:6px" }, "⚠") : ""] : "—", n > 5 ? "warn" : "");
+    if (connected && status.last_update) {
+      const age = Math.round((now - status.last_update) / 1000);
+      $("#lastupdate").textContent = `updated ${age} s ago`;
+    } else $("#lastupdate").textContent = "";
+  }
+  setInterval(tickPosChanges, 500);
+
+  // ------------------------------------------------------------ trend chart
+  const WINDOW = 60 * 60 * 1000;
+  function drawChart() {
+    const cv = $("#chart"); const w = cv.clientWidth; if (cv.width !== w) cv.width = w;
+    const h = cv.height, ctx = cv.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+    const now = Date.now();
+    for (const k of ["battery", "position"]) while (trend[k].length && now - trend[k][0][0] > WINDOW) trend[k].shift();
+    if (!connectedAt) return;
+    const t0 = Math.max(connectedAt, now - WINDOW), span = Math.max(now - t0, 10000);
+    const x = t => 8 + (t - t0) / span * (w - 16);
+    const y = v => 8 + (100 - v) / 100 * (h - 34);
+    ctx.strokeStyle = "#333a45"; ctx.lineWidth = 1;
+    for (const v of [0, 50, 100]) { ctx.beginPath(); ctx.moveTo(8, y(v)); ctx.lineTo(w - 8, y(v)); ctx.stroke(); }
+    ctx.fillStyle = "#8b95a5"; ctx.font = "10px system-ui"; ctx.fillText("100", 10, y(100) + 9); ctx.fillText("0", 10, y(0) - 2);
+    ctx.strokeStyle = "#3ddc84"; ctx.lineWidth = 2; ctx.beginPath();
+    trend.battery.forEach(([t, v], i) => i ? ctx.lineTo(x(t), y(v)) : ctx.moveTo(x(t), y(v)));
+    ctx.stroke();
+    for (const [t, v] of trend.battery) { ctx.fillStyle = v < BATTERY_WARN ? "#ff5d5d" : "#3ddc84"; ctx.fillRect(x(t) - 1.5, y(v) - 1.5, 3, 3); }
+    for (const [t, pos] of trend.position) { ctx.fillStyle = POS_COLORS[pos] ?? "#fff"; ctx.fillRect(x(t) - 1, h - 22, 2, 16); }
+  }
+  setInterval(drawChart, 1000);
+  window.addEventListener("resize", drawChart);
+
+  // ------------------------------------------------------------------- log
+  const logEl = $("#log"); const MAX_LOG = 1000;
+  function addLog(e) {
+    const stick = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 4;
+    const ts = e.ts.slice(11, 23);
+    logEl.append(el("div", { class: "entry " + e.dir }, el("span", { class: "ts" }, ts), el("span", { class: "dir" }, e.dir),
+      el("span", {}, el("b", {}, e.name + " "), el("span", { class: "bytes" }, e.bytes ? `[${e.bytes}] ` : ""), el("span", { class: "text" }, e.text || ""))));
+    while (logEl.childElementCount > MAX_LOG) logEl.firstElementChild.remove();
+    if (stick) logEl.scrollTop = logEl.scrollHeight;
+  }
+  $("#clearlog").onclick = () => logEl.replaceChildren();
+
+  // ------------------------------------------------------------- WebSocket
+  function openWs() {
+    ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+    ws.onmessage = ev => handle(JSON.parse(ev.data));
+    ws.onclose = () => { renderConnection({ state: "disconnected" }); setTimeout(openWs, 1000); };
+  }
+  function applyStatus(fields, lastUpdate) {
+    Object.assign(status, fields);
+    if (lastUpdate) status.last_update = Date.parse(lastUpdate);
+    const now = Date.now();
+    if (fields.battery !== undefined) trend.battery.push([now, fields.battery]);
+    if (fields.position !== undefined && fields.position !== lastPos) {
+      if (lastPos !== null) posChanges.push(now);
+      lastPos = fields.position; trend.position.push([now, fields.position]);
+    }
+    renderStatus(); tickPosChanges();
+  }
+  function handle(m) {
+    if (m.type === "snapshot") {
+      if (m.devices?.length) fillDevices(m.devices);
+      renderConnection(m.connection);
+      for (const k of Object.keys(status)) delete status[k];
+      applyStatus(m.status || {}, m.last_update);
+    } else if (m.type === "connection") renderConnection(m);
+    else if (m.type === "status") applyStatus(m.fields, m.last_update);
+    else if (m.type === "log") addLog(m);
+  }
+
+  // ------------------------------------------------------------ connection
+  function fillDevices(list) {
+    const sel = $("#devices"); sel.replaceChildren();
+    for (const d of list) sel.append(el("option", { value: d.address, "data-name": d.name, "data-rssi": d.rssi ?? "" },
+      d.rssi != null ? `${d.name}  (${d.address}, ${d.rssi} dBm)` : d.name));
+  }
+  $("#scan").onclick = async () => {
+    const b = $("#scan"); b.disabled = true; b.textContent = "Scanning…";
+    try { fillDevices(await api("/api/scan")); } catch (e) { addLog({ ts: new Date().toISOString(), dir: "error", name: "scan", text: e.message }); }
+    b.disabled = false; b.textContent = "Scan";
+  };
+  $("#connect").onclick = async () => {
+    const o = $("#devices").selectedOptions[0]; if (!o) return;
+    try { await api("/api/connect", { address: o.value, name: o.dataset.name, rssi: o.dataset.rssi ? Number(o.dataset.rssi) : null }); }
+    catch (e) { addLog({ ts: new Date().toISOString(), dir: "error", name: "connect", text: e.message }); }
+  };
+  $("#disconnect").onclick = () => api("/api/disconnect");
+  $("#refresh").onclick = () => api("/api/refresh").catch(() => {});
+
+  // -------------------------------------------------------------- commands
+  async function run(name, params) {
+    try { await api("/api/command", { name, params }); }
+    catch (e) { addLog({ ts: new Date().toISOString(), dir: "error", name, text: e.message }); }
+  }
+
+  function paramField(p, onchange) {
+    let input;
+    if (p.choices) {
+      input = el("select", { name: p.name, onchange }, ...Object.entries(p.choices).map(([v, l]) => el("option", { value: v, selected: Number(v) === p.default ? "" : null }, l)));
+      return { wrap: el("label", { class: "param" }, p.name, input), input, valid: () => true };
+    }
+    input = el("input", { type: "number", name: p.name, min: p.min, max: p.max, step: 1, value: p.default, oninput: onchange });
+    const msg = el("span", { class: "msg" });
+    const range = el("span", { class: "range" }, `${p.min}–${p.max}${p.unit ? " " + p.unit : ""}`);
+    const valid = () => {
+      const v = Number(input.value);
+      const ok = input.value !== "" && Number.isInteger(v) && v >= p.min && v <= p.max;
+      input.classList.toggle("invalid", !ok); msg.textContent = ok ? "" : `${p.min}–${p.max}`;
+      return ok;
+    };
+    return { wrap: el("label", { class: "param" }, p.name, input, range, msg), input, valid };
+  }
+
+  function commandRow(c) {
+    const btn = el("button", { "data-needs-connection": "", "data-command": c.name, disabled: "", title: HINT }, c.name);
+    const fields = c.params.map(p => paramField(p, () => validate()));
+    const validate = () => { const ok = fields.every(f => f.valid()); btn.dataset.invalid = ok ? "0" : "1"; btn.disabled = !connected || !ok; return ok; };
+    btn.onclick = () => { if (!validate()) return; run(c.name, Object.fromEntries(fields.map(f => [f.input.name, Number(f.input.value)]))); };
+    return el("div", { class: "cmd" }, btn, el("span", { class: "op" }, `0x${c.opcode.toString(16).toUpperCase().padStart(2, "0")}`), ...fields.map(f => f.wrap));
+  }
+
+  // hold-to-drive
+  let driveTimer = null, driveDir = null;
+  const DRIVE_MS = 40;
+  function sendDrive() {
+    if (!ws || ws.readyState !== 1 || !driveDir) return;
+    const sp = Number($("#speed").value), tr = Number($("#turn").value);
+    const [f, t] = { up: [sp, tr], down: [-sp, tr], left: [0, -Math.max(tr, 8)], right: [0, Math.max(tr, 8)] }[driveDir];
+    ws.send(JSON.stringify({ type: "drive", speed: f, turn: t }));
+  }
+  function startDrive(dir) {
+    if (!connected) return;
+    stopDrive(false); driveDir = dir; sendDrive(); driveTimer = setInterval(sendDrive, DRIVE_MS);
+  }
+  function stopDrive(send = true) {
+    if (driveTimer) clearInterval(driveTimer);
+    driveTimer = null;
+    if (driveDir && send && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "stop" }));
+    driveDir = null;
+  }
+  window.addEventListener("blur", () => stopDrive());
+  document.addEventListener("visibilitychange", () => { if (document.hidden) stopDrive(); });
+  window.addEventListener("pointerup", () => stopDrive());
+
+  function drivePad(c) {
+    const pad = el("div", { id: "pad" });
+    const mk = (dir, glyph, cls = "") => {
+      const b = el("button", { class: cls, "data-needs-connection": "", "data-drive": dir, disabled: "", title: HINT }, glyph);
+      b.addEventListener("pointerdown", e => { e.preventDefault(); startDrive(dir); });
+      b.addEventListener("pointerleave", () => { if (driveDir === dir) stopDrive(); });
+      b.addEventListener("pointercancel", () => stopDrive());
+      return b;
+    };
+    pad.append(mk("up", "▲"), mk("left", "◀"), mk("right", "▶"), mk("down", "▼"));
+    const sliders = el("div", { class: "sliders" },
+      el("label", {}, "speed ", el("input", { type: "range", id: "speed", min: 0, max: 32, value: 20 }), el("output", { id: "speedv" }, "20")),
+      el("label", {}, "turn ", el("input", { type: "range", id: "turn", min: -32, max: 32, value: 0 }), el("output", { id: "turnv" }, "0")));
+    sliders.addEventListener("input", () => { $("#speedv").textContent = $("#speed").value; $("#turnv").textContent = $("#turn").value; });
+    return el("div", { class: "cmd", style: "flex-direction:column;align-items:flex-start" },
+      el("div", {}, el("b", {}, c.name), " ", el("span", { class: "op" }, "0x78 — hold to drive")), pad, sliders);
+  }
+
+  function rawPanel() {
+    const input = el("input", { type: "text", placeholder: "84 FF 00 00", style: "width:200px;font-family:monospace" });
+    const msg = el("span", { class: "msg", style: "color:var(--bad);font-size:11px" });
+    const btn = el("button", { "data-needs-connection": "", "data-command": "Raw", disabled: "", title: HINT }, "Send raw");
+    const valid = () => { const ok = /^\s*([0-9a-f]{2}\s*)+$/i.test(input.value); input.classList.toggle("invalid", !ok && input.value !== ""); msg.textContent = ok || input.value === "" ? "" : "hex bytes only, e.g. 84 FF 00 00"; btn.dataset.invalid = ok ? "0" : "1"; btn.disabled = !connected || !ok; return ok; };
+    input.oninput = valid; btn.dataset.invalid = "1";
+    btn.onclick = async () => { if (!valid()) return; try { await api("/api/raw", { bytes: input.value }); } catch (e) { addLog({ ts: new Date().toISOString(), dir: "error", name: "Raw", text: e.message }); } };
+    return el("div", { class: "panel", "data-family": "Raw" }, el("h2", {}, "Raw"), el("div", { class: "cmd" }, btn, el("span", { class: "param" }, input, msg)));
+  }
+
+  function buildPanels() {
+    const root = $("#panels"); root.replaceChildren();
+    for (const fam of meta.families) {
+      if (fam === "Raw") { root.append(rawPanel()); continue; }
+      const panel = el("div", { class: "panel", "data-family": fam }, el("h2", {}, fam));
+      for (const c of meta.commands.filter(c => c.family === fam)) panel.append(c.name === "Drive" ? drivePad(c) : commandRow(c));
+      root.append(panel);
+    }
+    $("#poslegend").replaceChildren(...Object.entries(meta.positions).map(([k, v]) => el("span", { style: `color:${POS_COLORS[k]}` }, `▮ ${v}`)));
+  }
+
+  // ------------------------------------------------------------------ boot
+  (async () => {
+    meta = await api("/api/commands", null, "GET");
+    buildPanels();
+    fillDevices([{ name: "Mock MiP", address: "00:00:00:00:00:00", rssi: null }]);
+    renderConnection({ state: "disconnected" });
+    openWs();
+  })();
+})();
+</script>
+</body>
+</html>
