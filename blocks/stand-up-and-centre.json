@@ -1,0 +1,50 @@
+{
+  "name": "Stand up and centre",
+  "colour": 330,
+  "params": [],
+  "workspace": {
+    "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+        {
+          "type": "mip_get_up",
+          "id": "ship25",
+          "fields": {
+            "DIR": "2"
+          },
+          "next": {
+            "block": {
+              "type": "mip_wait",
+              "id": "ship26",
+              "fields": {
+                "SECS": 2
+              },
+              "next": {
+                "block": {
+                  "type": "mip_head_leds",
+                  "id": "ship27",
+                  "fields": {
+                    "L1": "1",
+                    "L2": "1",
+                    "L3": "1",
+                    "L4": "1"
+                  },
+                  "next": {
+                    "block": {
+                      "type": "mip_chest_led",
+                      "id": "ship28",
+                      "fields": {
+                        "COLOUR": "#00ff00"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "shipped": true
+}

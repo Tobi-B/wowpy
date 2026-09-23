@@ -14,9 +14,13 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from .. import blocks as blocks_mod
+from .. import codegen
 from .. import protocol as p
 from ..mip import MiP
 from ..mock import MOCK_ADDRESS, MOCK_NAME, MockClient
+from ..program import Program, ProgramError
+from ..storage import NAME_HINT, NameError_, Store
 
 STATIC = Path(__file__).parent / "static"
 
@@ -61,6 +65,10 @@ class Hub:
         self.last_drive = 0.0
         self.lock = asyncio.Lock()
         self.scan_cache = []
+        self.store = Store()
+        self.program = None
+        self.program_task = None
+        self.program_state = {"state": "idle", "block": None, "error": None}
 
     # -- broadcasting -------------------------------------------------------
 
@@ -81,12 +89,17 @@ class Hub:
     def push_connection(self):
         self._push({"type": "connection", "state": self.connection, **self.device})
 
+    def push_program(self, state, block=None, error=None):
+        self.program_state = {"state": state, "block": block, "error": error}
+        self._push({"type": "program", **self.program_state})
+
     def push_status(self):
         self._push({"type": "status", "fields": self.status, "last_update": self.last_update})
 
     def snapshot(self):
         return {"type": "snapshot", "connection": {"state": self.connection, **self.device},
-                "status": self.status, "last_update": self.last_update, "devices": self.scan_cache}
+                "status": self.status, "last_update": self.last_update, "devices": self.scan_cache,
+                "program": self.program_state}
 
     # -- notifications from the robot ----------------------------------------
 
@@ -99,10 +112,19 @@ class Hub:
             self.last_update = datetime.now().isoformat(timespec="milliseconds")
             self.push_status()
 
+    def _on_send(self, data):
+        # Commands issued through the dashboard log themselves; this covers the
+        # ones a running program sends.
+        if self.program is not None and self.program.state == "running":
+            name = p.NAMES_BY_OPCODE.get(data[0], f"0x{data[0]:02X}")
+            self.log("sent", name, data, "program")
+
     def _on_disconnect(self):
         self.connection = "disconnected"
         self.log("info", "disconnected")
         self.push_connection()
+        if self.program is not None and self.program.state == "running":
+            self.program.stop("stopped (disconnected)")
         if self.poll_task:
             self.poll_task.cancel()
             self.poll_task = None
@@ -137,6 +159,7 @@ class Hub:
                     mip = MiP(address)
                 mip.on_notification = self._on_notification
                 mip.on_disconnect = self._on_disconnect
+                mip.on_send = self._on_send
                 await mip.connect()
             except Exception as e:
                 self.connection = "disconnected"
@@ -243,6 +266,50 @@ class Hub:
         self.log("sent", "Stop", bytes([p.CMD_STOP]))
 
 
+    # -- block programs ---------------------------------------------------
+
+    async def run_program(self, code):
+        mip = self.require()
+        if self.program is not None and self.program.state == "running":
+            raise HTTPException(409, "a program is already running")
+        program = Program(mip, on_state=self.push_program,
+                          log=lambda text: self.log("error", "program", text=text))
+        program.status = self.status          # share the polled values
+        self.program = program
+        self.push_program("running")
+        self.log("info", "program started")
+
+        async def runner():
+            try:
+                await program.run(code)
+            except ProgramError as e:
+                self.push_program("error", None, str(e))
+                self.log("error", "program", text=str(e))
+            finally:
+                # Safety net: a program that was stopped or failed mid-move must
+                # not leave the robot rolling. A clean finish already stopped.
+                if self.program_state["state"] != "finished":
+                    try:
+                        if self.mip is not None:
+                            await self.mip.stop()
+                    except Exception:
+                        pass
+                self.log("info", f"program {self.program_state['state']}")
+
+        self.program_task = asyncio.create_task(runner())
+        return self.program_state
+
+    async def stop_program(self):
+        if self.program is None or self.program.state != "running":
+            return self.program_state
+        await self.program.stop_and_halt()
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+            if self.program.state != "running":
+                break
+        return self.program_state
+
+
 hub = Hub()
 app = FastAPI(title="MiP dashboard")
 
@@ -267,6 +334,11 @@ class RawBody(BaseModel):
 @app.get("/")
 async def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/blocks")
+async def blocks_page():
+    return FileResponse(STATIC / "blocks.html")
 
 
 @app.get("/api/commands")
@@ -336,6 +408,99 @@ async def refresh():
 @app.get("/api/state")
 async def state():
     return hub.snapshot()
+
+
+# ------------------------------------------------------- block programming
+
+class WorkspaceBody(BaseModel):
+    workspace: dict = {}
+
+
+class SaveProgramBody(BaseModel):
+    name: str
+    workspace: dict = {}
+
+
+class BlockBody(BaseModel):
+    name: str
+    colour: int = 330
+    params: list = []
+    workspace: dict = {}
+
+
+@app.get("/api/blocks/catalogue")
+async def block_catalogue():
+    """Block definitions plus the user's custom blocks."""
+    return {**blocks_mod.catalogue(), "custom": hub.store.list_blocks()}
+
+
+@app.post("/api/blocks/code")
+async def block_code(body: WorkspaceBody):
+    """Generate Python for a workspace without saving it."""
+    return {"code": codegen.generate(body.workspace, hub.store.list_blocks())}
+
+
+@app.get("/api/blocks/custom")
+async def list_custom_blocks():
+    return hub.store.list_blocks()
+
+
+@app.post("/api/blocks/custom")
+async def save_custom_block(body: BlockBody):
+    try:
+        return hub.store.save_block(body.model_dump())
+    except NameError_:
+        raise HTTPException(422, NAME_HINT)
+
+
+@app.delete("/api/blocks/custom/{name}")
+async def delete_custom_block(name: str, force: bool = False):
+    uses = hub.store.block_usage(name)
+    if uses and not force:
+        times = "time" if uses == 1 else "times"
+        raise HTTPException(409, f"{name} is still used {uses} {times} in saved programs")
+    hub.store.delete_block(name)
+    return {"deleted": name}
+
+
+@app.get("/api/programs")
+async def list_programs():
+    return hub.store.list_programs()
+
+
+@app.get("/api/programs/{name}")
+async def load_program(name: str):
+    try:
+        return hub.store.load_program(name)
+    except NameError_:
+        raise HTTPException(422, NAME_HINT)
+    except FileNotFoundError:
+        raise HTTPException(404, f"no program named {name!r}")
+
+
+@app.post("/api/programs")
+async def save_program(body: SaveProgramBody):
+    try:
+        code = hub.store.save_program(body.name, body.workspace)
+    except NameError_:
+        raise HTTPException(422, NAME_HINT)
+    return {"name": body.name, "code": code}
+
+
+@app.post("/api/program/run")
+async def run_program(body: WorkspaceBody):
+    code = codegen.generate(body.workspace, hub.store.list_blocks())
+    return await hub.run_program(code)
+
+
+@app.post("/api/program/stop")
+async def stop_program():
+    return await hub.stop_program()
+
+
+@app.get("/api/program/state")
+async def program_state():
+    return hub.program_state
 
 
 # Mock-only helpers so the acceptance scenarios can be driven without hardware.

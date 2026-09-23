@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiP block editor</title>
+<script src="https://cdn.jsdelivr.net/npm/blockly@11.2.0/blockly.min.js"></script>
+<!-- Blockly 11 moved the colour field out of core; without it colour fields are dropped. -->
+<script src="https://cdn.jsdelivr.net/npm/@blockly/field-colour@5.0.9/dist/index.js"></script>
+<style>
+  :root {
+    --bg: #14171c; --panel: #1e2229; --panel2: #262b34; --line: #333a45;
+    --fg: #e6e9ee; --muted: #8b95a5; --accent: #4da3ff; --ok: #3ddc84;
+    --warn: #ffb347; --bad: #ff5d5d; --sent: #4da3ff; --recv: #3ddc84; --info: #8b95a5;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); height: 100vh; display: flex; flex-direction: column; }
+  button { font: inherit; color: var(--fg); background: var(--panel2); border: 1px solid var(--line);
+           border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #08131f; border-color: var(--accent); font-weight: 600; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
+  input, select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+                  border-radius: 5px; padding: 4px 6px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+  a { color: var(--accent); }
+
+  header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 8px 16px;
+           display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  #title { font-weight: 600; }
+  #runstate { font-weight: 600; }
+  #runstate.running { color: var(--accent); }
+  #runstate.finished { color: var(--ok); }
+  #runstate.error { color: var(--bad); }
+  #runstate.stopped, #runstate.idle { color: var(--muted); }
+  #statusline { color: var(--muted); display: flex; gap: 14px; margin-left: auto; flex-wrap: wrap; }
+  #statusline b { color: var(--fg); font-weight: 500; }
+  #statusline .low { color: var(--bad); }
+
+  main { flex: 1; display: grid; grid-template-columns: 1fr 380px; min-height: 0; }
+  #blockly { min-height: 0; }
+  aside { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); }
+  .tabs button { border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 8px 14px; }
+  .tabs button.active { color: var(--fg); box-shadow: inset 0 -2px 0 var(--accent); }
+  .pane { flex: 1; overflow: auto; padding: 10px 12px; display: none; min-height: 0; }
+  .pane.active { display: block; }
+  pre#code { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+  .entry { display: grid; grid-template-columns: 78px 58px 1fr; gap: 6px; padding: 2px 0;
+           border-top: 1px solid var(--line); align-items: baseline;
+           font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .entry .ts { color: var(--muted); }
+  .entry .dir { font-weight: 600; text-transform: uppercase; font-size: 10px; }
+  .entry.sent .dir { color: var(--sent); }
+  .entry.received .dir { color: var(--recv); }
+  .entry.info .dir { color: var(--info); }
+  .entry.error .dir, .entry.timeout .dir { color: var(--bad); }
+  .entry .bytes { color: var(--muted); }
+
+  dialog { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 340px; }
+  dialog::backdrop { background: #000a; }
+  dialog h3 { margin: 0 0 12px; font-size: 15px; }
+  dialog .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  dialog .msg { color: var(--bad); font-size: 12px; min-height: 1em; }
+  dialog .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+  .param-row { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+
+  /* Blockly 11 dropped setHighlighted, so the running block gets its own class. */
+  .mip-running > .blocklyPath { stroke: var(--accent) !important; stroke-width: 4px !important; }
+  @keyframes mippulse { 50% { filter: brightness(1.35); } }
+  .mip-running { animation: mippulse 0.8s ease-in-out infinite; }
+</style>
+</head>
+<body>
+
+<header>
+  <span id="title">untitled</span>
+  <button id="run" class="primary" disabled title="Connect to a MiP first">▶ Run</button>
+  <button id="stop" disabled>■ Stop</button>
+  <span id="runstate" class="idle">Idle</span>
+  <span style="width:1px;height:20px;background:var(--line)"></span>
+  <button id="open">Open</button>
+  <button id="save">Save</button>
+  <button id="makeblock" disabled title="Select a stack of blocks first">Make a block from selection</button>
+  <a href="/">← Dashboard</a>
+  <span id="statusline"></span>
+</header>
+
+<main>
+  <div id="blockly"></div>
+  <aside>
+    <div class="tabs">
+      <button data-pane="code" class="active">Python</button>
+      <button data-pane="log">Log</button>
+      <button data-pane="blocks">My blocks</button>
+    </div>
+    <div class="pane active" id="pane-code"><pre id="code"></pre></div>
+    <div class="pane" id="pane-log"><div id="log"></div></div>
+    <div class="pane" id="pane-blocks"><div id="customlist"></div></div>
+  </aside>
+</main>
+
+<xml id="toolbox" style="display:none"></xml>
+
+<dialog id="dlg-save">
+  <h3>Save program</h3>
+  <div class="row"><input id="save-name" placeholder="my program" style="flex:1"></div>
+  <div class="msg" id="save-msg"></div>
+  <div class="actions"><button data-close>Cancel</button><button id="save-ok" class="primary">Save</button></div>
+</dialog>
+
+<dialog id="dlg-open">
+  <h3>Open program</h3>
+  <div class="row"><select id="open-list" style="flex:1"></select></div>
+  <div class="msg" id="open-msg"></div>
+  <div class="actions"><button data-close>Cancel</button><button id="open-ok" class="primary">Open</button></div>
+</dialog>
+
+<dialog id="dlg-make">
+  <h3>Make a block from selection</h3>
+  <div class="row"><label>Name <input id="make-name" placeholder="warn and turn"></label></div>
+  <div class="row"><label>Colour <input id="make-colour" type="number" min="0" max="360" value="330" style="width:6em"></label></div>
+  <div class="row" style="align-items:flex-start;flex-direction:column">
+    <div style="color:var(--muted);font-size:12px;margin-bottom:4px">Promote fields to parameters:</div>
+    <div id="make-params"></div>
+  </div>
+  <div class="msg" id="make-msg"></div>
+  <div class="actions"><button data-close>Cancel</button><button id="make-ok" class="primary">Create</button></div>
+</dialog>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const el = (tag, attrs = {}, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") n.className = v;
+      else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+      else if (v !== null && v !== undefined) n.setAttribute(k, v);
+    }
+    for (const k of kids) n.append(k);
+    return n;
+  };
+  const api = async (path, body, method = "POST") => {
+    const r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    if (!r.ok) { let d = ""; try { d = (await r.json()).detail; } catch {} throw new Error(d || r.statusText); }
+    return r.json();
+  };
+
+  const BATTERY_WARN = 40;
+  let catalogue = null, workspace = null, connected = false, dirty = false;
+  let programName = null, highlighted = null, customBlocks = [], loading = false;
+
+  // ------------------------------------------------------------ block defs
+
+  // The colour field lives in a plugin; if it did not load, fall back to a
+  // dropdown of preset colours so the block still round-trips its hex value.
+  const COLOUR_PRESETS = [["red", "#ff0000"], ["green", "#00ff00"], ["blue", "#0000ff"],
+                          ["yellow", "#ffff00"], ["cyan", "#00ffff"], ["magenta", "#ff00ff"],
+                          ["white", "#ffffff"], ["off", "#000000"]];
+  const hasColourField = () => {
+    // The plugin exposes registerFieldColour(); it does not self-register.
+    try { window.registerFieldColour?.(); } catch { /* fall through to the dropdown */ }
+    try { return !!Blockly.fieldRegistry.fromJson({ type: "field_colour", colour: "#ff0000" }); }
+    catch { return false; }
+  };
+  let colourFieldAvailable = true;
+
+  function adaptArg(a) {
+    if (a.type === "field_colour" && !colourFieldAvailable) {
+      return { type: "field_dropdown", name: a.name, options: COLOUR_PRESETS.map(([l, v]) => [l, v]) };
+    }
+    return { ...a };
+  }
+
+  function defineBlock(spec) {
+    const colour = spec.colour;
+    Blockly.Blocks[spec.type] = {
+      init() {
+        const json = { message0: spec.message, args0: spec.args.map(adaptArg), colour, tooltip: spec.type };
+        if (spec.shape === "statement") { json.previousStatement = null; json.nextStatement = null; }
+        else if (spec.shape === "loop") { json.previousStatement = null; json.nextStatement = null; }
+        else if (spec.shape === "value") { json.output = spec.output || null; }
+        else if (spec.shape === "hat") { json.nextStatement = undefined; }
+        this.jsonInit(json);
+        if (spec.shape === "hat") { this.setPreviousStatement(false); this.setNextStatement(false); }
+      }
+    };
+  }
+
+  function defineCustomBlock(def) {
+    const params = def.params || [];
+    const message = def.name + (params.length ? " " + params.map((p, i) => `${p.name} %${i + 1}`).join(" ") : "");
+    Blockly.Blocks[def.name] = {
+      init() {
+        this.jsonInit({
+          message0: message,
+          args0: params.map(p => ({ type: "input_value", name: p.name.toUpperCase(), check: "Number" })),
+          colour: def.colour ?? 330, previousStatement: null, nextStatement: null,
+          tooltip: "custom block", inputsInline: true,
+        });
+      }
+    };
+    // default shadow numbers for parameters
+    Blockly.Blocks[def.name].paramDefaults = params;
+  }
+
+  function paramShadow(def) {
+    if (!def.params?.length) return "";
+    return def.params.map(p =>
+      `<value name="${p.name.toUpperCase()}"><shadow type="math_number"><field name="NUM">${p.default ?? 1}</field></shadow></value>`
+    ).join("");
+  }
+
+  // Blockly's own blocks, appended to the matching category.
+  const STANDARD = {
+    Control: '<block type="controls_repeat_ext"><value name="TIMES"><shadow type="math_number"><field name="NUM">10</field></shadow></value></block><block type="controls_whileUntil"></block><block type="controls_flow_statements"></block>',
+  };
+  const EXTRA_CATEGORIES = [
+    ["Logic", 210, '<block type="controls_if"><mutation else="1"></mutation></block><block type="logic_compare"></block><block type="logic_operation"></block><block type="logic_negate"></block><block type="logic_boolean"></block>'],
+    ["Math", 230, '<block type="math_number"></block><block type="math_arithmetic"></block><block type="math_random_int"></block>'],
+    ["Text", 160, '<block type="text"></block><block type="text_join"></block>'],
+  ];
+
+  function buildToolbox() {
+    const parts = ['<xml id="toolbox" style="display:none">'];
+    for (const { label, category } of catalogue.toolbox) {
+      const blocks = catalogue.blocks.filter(b => b.category === category);
+      parts.push(`<category name="${label}" colour="${catalogue.colours[category]}">`);
+      for (const b of blocks) parts.push(`<block type="${b.type}"></block>`);
+      if (STANDARD[category]) parts.push(STANDARD[category]);
+      parts.push("</category>");
+    }
+    for (const [name, colour, blocks] of EXTRA_CATEGORIES)
+      parts.push(`<category name="${name}" colour="${colour}">${blocks}</category>`);
+    parts.push('<category name="Variables" colour="330" custom="VARIABLE"></category>');
+    parts.push('<category name="Functions" colour="290" custom="PROCEDURE"></category>');
+    parts.push(`<category name="My blocks" colour="330" id="cat-custom">${customToolboxXml()}</category>`);
+    parts.push("</xml>");
+    return parts.join("");
+  }
+
+  function customToolboxXml() {
+    return customBlocks.map(d => `<block type="${d.name}">${paramShadow(d)}</block>`).join("");
+  }
+
+  // ----------------------------------------------------------------- code
+  let codeTimer = null;
+  function scheduleCode() {
+    clearTimeout(codeTimer);
+    codeTimer = setTimeout(async () => {
+      try {
+        const { code } = await api("/api/blocks/code", { workspace: save() });
+        $("#code").textContent = code;
+      } catch (e) { $("#code").textContent = "// " + e.message; }
+    }, 120);
+  }
+  const save = () => Blockly.serialization.workspaces.save(workspace);
+
+  // ------------------------------------------------------------ highlight
+  function highlight(id) {
+    if (highlighted && highlighted !== id) {
+      const prev = workspace.getBlockById(highlighted);
+      prev?.getSvgRoot()?.classList.remove("mip-running");
+    }
+    highlighted = id;
+    if (id) workspace.getBlockById(id)?.getSvgRoot()?.classList.add("mip-running");
+  }
+
+  function clearHighlight() {
+    for (const b of workspace.getAllBlocks(false)) b.getSvgRoot()?.classList.remove("mip-running");
+    highlighted = null;
+  }
+
+  function markError(id, text) {
+    const block = id && workspace.getBlockById(id);
+    if (block) block.setWarningText(text);
+  }
+  function clearErrors() {
+    for (const b of workspace.getAllBlocks(false)) b.setWarningText(null);
+  }
+
+  // ---------------------------------------------------------------- state
+  function setRunState(state, block, error) {
+    const s = $("#runstate");
+    const label = { running: "Running", finished: "Finished", error: "Error", idle: "Idle" }[state] || state[0].toUpperCase() + state.slice(1);
+    s.textContent = label;
+    s.className = state.startsWith("stopped") ? "stopped" : state;
+    const running = state === "running";
+    $("#stop").disabled = !running;
+    $("#run").disabled = running || !connected;
+    if (running) highlight(block);
+    else clearHighlight();
+    if (state === "error") { markError(block, error || "error"); }
+  }
+
+  function setConnection(c) {
+    connected = c.state === "connected";
+    $("#run").disabled = !connected || $("#runstate").className === "running";
+    $("#run").title = connected ? "" : "Connect to a MiP first";
+    renderStatus();
+  }
+
+  const status = {};
+  function renderStatus() {
+    const parts = [];
+    parts.push(el("span", {}, connected ? "● connected" : "○ disconnected"));
+    if (status.battery !== undefined)
+      parts.push(el("span", { class: status.battery < BATTERY_WARN ? "low" : "" }, "battery ", el("b", {}, status.battery + " %")));
+    if (status.position !== undefined && catalogue)
+      parts.push(el("span", {}, "position ", el("b", {}, catalogue.positions?.[status.position] ?? status.position)));
+    $("#statusline").replaceChildren(...parts);
+  }
+
+  // ------------------------------------------------------------------ log
+  const logEl = () => $("#log");
+  function addLog(e) {
+    const box = logEl();
+    const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+    box.append(el("div", { class: "entry " + e.dir },
+      el("span", { class: "ts" }, e.ts.slice(11, 23)),
+      el("span", { class: "dir" }, e.dir),
+      el("span", {}, el("b", {}, e.name + " "), el("span", { class: "bytes" }, e.bytes ? `[${e.bytes}] ` : ""), e.text || "")));
+    while (box.childElementCount > 500) box.firstElementChild.remove();
+    if (stick) box.scrollTop = box.scrollHeight;
+  }
+
+  // ------------------------------------------------------------ WebSocket
+  function openWs() {
+    const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+    ws.onmessage = ev => {
+      const m = JSON.parse(ev.data);
+      if (m.type === "snapshot") {
+        setConnection(m.connection); Object.assign(status, m.status || {}); renderStatus();
+        if (m.program) setRunState(m.program.state, m.program.block, m.program.error);
+      } else if (m.type === "connection") setConnection(m);
+      else if (m.type === "status") { Object.assign(status, m.fields); renderStatus(); }
+      else if (m.type === "log") addLog(m);
+      else if (m.type === "program") setRunState(m.state, m.block, m.error);
+    };
+    ws.onclose = () => { setConnection({ state: "disconnected" }); setTimeout(openWs, 1000); };
+  }
+
+  // -------------------------------------------------------------- actions
+  $("#run").onclick = async () => {
+    clearErrors();
+    try { await api("/api/program/run", { workspace: save() }); }
+    catch (e) { addLog({ ts: new Date().toISOString(), dir: "error", name: "run", text: e.message }); }
+  };
+  $("#stop").onclick = () => api("/api/program/stop").catch(() => {});
+
+  document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("active", x === b));
+    document.querySelectorAll(".pane").forEach(p => p.classList.toggle("active", p.id === "pane-" + b.dataset.pane));
+  });
+  document.querySelectorAll("dialog [data-close]").forEach(b => b.onclick = () => b.closest("dialog").close());
+
+  // save / open
+  $("#save").onclick = () => { $("#save-name").value = programName || ""; $("#save-msg").textContent = ""; $("#dlg-save").showModal(); };
+  $("#save-ok").onclick = async () => {
+    try {
+      const { name } = await api("/api/programs", { name: $("#save-name").value, workspace: save() });
+      programName = name; dirty = false; setTitle(); $("#dlg-save").close();
+    } catch (e) { $("#save-msg").textContent = e.message; }
+  };
+  $("#open").onclick = async () => {
+    const names = await api("/api/programs", null, "GET");
+    $("#open-list").replaceChildren(...names.map(n => el("option", { value: n }, n)));
+    $("#open-msg").textContent = names.length ? "" : "no saved programs yet";
+    $("#dlg-open").showModal();
+  };
+  $("#open-ok").onclick = async () => {
+    const name = $("#open-list").value;
+    if (!name) return $("#dlg-open").close();
+    try {
+      const data = await api("/api/programs/" + encodeURIComponent(name), null, "GET");
+      // Loading fires change events; suppress them so the program is not
+      // marked as modified the moment it is opened.
+      loading = true;
+      Blockly.Events.disable();
+      try { Blockly.serialization.workspaces.load(data.workspace, workspace); }
+      finally { Blockly.Events.enable(); loading = false; }
+      programName = data.name; dirty = false; setTitle(); $("#dlg-open").close(); scheduleCode();
+    } catch (e) { $("#open-msg").textContent = e.message; }
+  };
+  function setTitle() { $("#title").textContent = (programName || "untitled") + (dirty ? " *" : ""); }
+  window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+  // make a block from selection
+  function selectedStack() {
+    const b = Blockly.getSelected();
+    if (!b || b.outputConnection) return null;
+    return b;
+  }
+  function refreshMakeButton() {
+    const b = selectedStack();
+    $("#makeblock").disabled = !b;
+    $("#makeblock").title = b ? "" : "Select a stack of blocks first";
+  }
+  $("#makeblock").onclick = () => {
+    const head = selectedStack();
+    if (!head) return;
+    const fields = [];
+    let cur = head;
+    while (cur) {
+      for (const input of cur.inputList) for (const f of input.fieldRow) {
+        if (f instanceof Blockly.FieldNumber) fields.push({ block: cur, field: f, label: `${cur.type}.${f.name}`, name: f.name });
+      }
+      cur = cur.getNextBlock();
+    }
+    $("#make-params").replaceChildren(...fields.map((f, i) => {
+      const cb = el("input", { type: "checkbox", "data-index": i });
+      const nm = el("input", { placeholder: f.name.toLowerCase(), style: "width:8em" });
+      return el("label", { class: "param-row" }, cb, f.label, nm);
+    }));
+    $("#make-params").fieldsMeta = fields;
+    $("#make-name").value = ""; $("#make-msg").textContent = "";
+    $("#dlg-make").showModal();
+  };
+  $("#make-ok").onclick = async () => {
+    const head = selectedStack();
+    const name = $("#make-name").value.trim();
+    if (!head || !name) { $("#make-msg").textContent = "enter a name"; return; }
+    const fields = $("#make-params").fieldsMeta || [];
+    const params = [];
+    document.querySelectorAll("#make-params .param-row").forEach((row, i) => {
+      const [cb, , nm] = [row.querySelector("input[type=checkbox]"), null, row.querySelector("input[type=text], input:not([type=checkbox])")];
+      if (cb.checked) {
+        const meta = fields[i];
+        params.push({ name: (nm.value || meta.name).trim().toLowerCase(), default: Number(meta.field.getValue()) || 0, _meta: meta });
+      }
+    });
+
+    // Serialise the selected stack, replacing promoted fields with parameter refs.
+    const body = Blockly.serialization.blocks.save(head, { addCoordinates: false });
+    const promote = new Map(params.map(p => [`${p._meta.block.id}:${p._meta.name}`, p.name]));
+    (function walk(b, blockId) {
+      if (!b) return;
+      for (const [fname] of Object.entries(b.fields || {})) {
+        const key = `${b.id}:${fname}`;
+        if (promote.has(key)) {
+          delete b.fields[fname];
+          b.inputs = b.inputs || {};
+          b.inputs[fname] = { block: { type: "custom_param", id: "p_" + promote.get(key), fields: { NAME: promote.get(key) } } };
+        }
+      }
+      for (const key of Object.keys(b.inputs || {})) walk(b.inputs[key].block);
+      walk(b.next?.block);
+    })(body);
+
+    try {
+      const def = await api("/api/blocks/custom", {
+        name, colour: Number($("#make-colour").value) || 330,
+        params: params.map(p => ({ name: p.name, default: p.default })),
+        workspace: { blocks: { languageVersion: 0, blocks: [body] } },
+      });
+      // Replace the selection with an instance of the new block.
+      const xmlParams = params.map(p => {
+        const meta = p._meta;
+        return `<value name="${p.name.toUpperCase()}"><shadow type="math_number"><field name="NUM">${Number(meta.field.getValue()) || 0}</field></shadow></value>`;
+      }).join("");
+      const parentConn = head.previousConnection?.targetConnection;
+      // dispose(false) removes the whole stack; dispose(true) would heal it back.
+      head.dispose(false);
+      await reloadCustom();
+      const inst = Blockly.Xml.domToBlock(Blockly.utils.xml.textToDom(`<block type="${name}">${xmlParams}</block>`), workspace);
+      if (parentConn && inst.previousConnection) parentConn.connect(inst.previousConnection);
+      $("#dlg-make").close();
+      scheduleCode();
+    } catch (e) { $("#make-msg").textContent = e.message; }
+  };
+
+  async function reloadCustom() {
+    customBlocks = await api("/api/blocks/custom", null, "GET");
+    for (const def of customBlocks) defineCustomBlock(def);
+    // refresh the dynamic category
+    const tb = workspace.getToolbox();
+    if (tb) {
+      const dom = Blockly.utils.xml.textToDom(buildToolbox());
+      workspace.updateToolbox(dom);
+    }
+    renderCustomList();
+  }
+
+  function renderCustomList() {
+    $("#customlist").replaceChildren(...customBlocks.map(d => el("div", { class: "param-row", style: "justify-content:space-between;padding:4px 0;border-top:1px solid var(--line)" },
+      el("span", {}, el("b", { style: "color:var(--fg)" }, d.name), d.params?.length ? ` (${d.params.map(p => p.name).join(", ")})` : "", d.shipped ? " · shipped" : ""),
+      el("button", { class: "danger", style: "padding:1px 6px;font-size:11px", onclick: async () => {
+        try { await api("/api/blocks/custom/" + encodeURIComponent(d.name), null, "DELETE"); await reloadCustom(); }
+        catch (e) { alert(e.message); }
+      } }, "Delete"))));
+    if (!customBlocks.length) $("#customlist").textContent = "no custom blocks yet";
+  }
+
+  // ------------------------------------------------------------------ boot
+  (async () => {
+    colourFieldAvailable = hasColourField();
+    catalogue = await api("/api/blocks/catalogue", null, "GET");
+    const meta = await api("/api/commands", null, "GET");
+    catalogue.positions = meta.positions;
+    for (const spec of catalogue.blocks) defineBlock(spec);
+    customBlocks = catalogue.custom || [];
+    for (const def of customBlocks) defineCustomBlock(def);
+
+    workspace = Blockly.inject("blockly", {
+      toolbox: Blockly.utils.xml.textToDom(buildToolbox()),
+      theme: Blockly.Theme.defineTheme("mipdark", {
+        base: Blockly.Themes.Classic,
+        componentStyles: {
+          workspaceBackgroundColour: "#14171c", toolboxBackgroundColour: "#1e2229",
+          toolboxForegroundColour: "#e6e9ee", flyoutBackgroundColour: "#262b34",
+          flyoutForegroundColour: "#e6e9ee", flyoutOpacity: 1,
+          scrollbarColour: "#333a45", insertionMarkerColour: "#4da3ff",
+salt: 0,
+        },
+      }),
+      grid: { spacing: 22, length: 3, colour: "#222830", snap: true },
+      zoom: { controls: true, wheel: true, startScale: 0.9 },
+      trashcan: true, renderer: "zelos",
+    });
+    renderCustomList();
+
+    workspace.addChangeListener(ev => {
+      if (ev.isUiEvent) { if (ev.type === Blockly.Events.SELECTED) refreshMakeButton(); return; }
+      if (!loading) { dirty = true; setTitle(); }
+      scheduleCode(); refreshMakeButton();
+    });
+    scheduleCode();
+    openWs();
+  })();
+})();
+</script>
+</body>
+</html>

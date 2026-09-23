@@ -1,0 +1,86 @@
+{
+  "name": "Look around",
+  "colour": 330,
+  "params": [],
+  "workspace": {
+    "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+        {
+          "type": "mip_head_leds",
+          "id": "ship10",
+          "fields": {
+            "L1": "2",
+            "L2": "2",
+            "L3": "2",
+            "L4": "2"
+          },
+          "next": {
+            "block": {
+              "type": "mip_turn",
+              "id": "ship11",
+              "fields": {
+                "DIR": "left",
+                "DEG": 45,
+                "SPEED": 10
+              },
+              "next": {
+                "block": {
+                  "type": "mip_wait",
+                  "id": "ship12",
+                  "fields": {
+                    "SECS": 0.5
+                  },
+                  "next": {
+                    "block": {
+                      "type": "mip_turn",
+                      "id": "ship13",
+                      "fields": {
+                        "DIR": "right",
+                        "DEG": 90,
+                        "SPEED": 10
+                      },
+                      "next": {
+                        "block": {
+                          "type": "mip_wait",
+                          "id": "ship14",
+                          "fields": {
+                            "SECS": 0.5
+                          },
+                          "next": {
+                            "block": {
+                              "type": "mip_turn",
+                              "id": "ship15",
+                              "fields": {
+                                "DIR": "left",
+                                "DEG": 45,
+                                "SPEED": 10
+                              },
+                              "next": {
+                                "block": {
+                                  "type": "mip_head_leds",
+                                  "id": "ship16",
+                                  "fields": {
+                                    "L1": "1",
+                                    "L2": "1",
+                                    "L3": "1",
+                                    "L4": "1"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "shipped": true
+}

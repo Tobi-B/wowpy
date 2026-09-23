@@ -1,0 +1,51 @@
+{
+  "name": "Celebrate",
+  "colour": 330,
+  "params": [],
+  "workspace": {
+    "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+        {
+          "type": "mip_flash_chest_led",
+          "id": "ship0",
+          "fields": {
+            "COLOUR": "#00ff00",
+            "ON": 200,
+            "OFF": 200
+          },
+          "next": {
+            "block": {
+              "type": "mip_play_sound",
+              "id": "ship1",
+              "fields": {
+                "INDEX": 8
+              },
+              "next": {
+                "block": {
+                  "type": "mip_turn",
+                  "id": "ship2",
+                  "fields": {
+                    "DIR": "right",
+                    "DEG": 360,
+                    "SPEED": 18
+                  },
+                  "next": {
+                    "block": {
+                      "type": "mip_chest_led",
+                      "id": "ship3",
+                      "fields": {
+                        "COLOUR": "#00ff00"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "shipped": true
+}

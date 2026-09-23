@@ -1,0 +1,87 @@
+{
+  "name": "Alarm",
+  "colour": 330,
+  "params": [
+    {
+      "name": "times",
+      "default": 3
+    }
+  ],
+  "workspace": {
+    "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+        {
+          "type": "mip_set_volume",
+          "id": "ship17",
+          "fields": {
+            "LEVEL": 7
+          },
+          "next": {
+            "block": {
+              "type": "controls_repeat_ext",
+              "id": "ship18",
+              "inputs": {
+                "TIMES": {
+                  "block": {
+                    "type": "custom_param",
+                    "id": "ship19",
+                    "fields": {
+                      "NAME": "times"
+                    }
+                  }
+                },
+                "DO": {
+                  "block": {
+                    "type": "mip_chest_led",
+                    "id": "ship20",
+                    "fields": {
+                      "COLOUR": "#ff0000"
+                    },
+                    "next": {
+                      "block": {
+                        "type": "mip_play_sound",
+                        "id": "ship21",
+                        "fields": {
+                          "INDEX": 24
+                        },
+                        "next": {
+                          "block": {
+                            "type": "mip_wait",
+                            "id": "ship22",
+                            "fields": {
+                              "SECS": 0.3
+                            },
+                            "next": {
+                              "block": {
+                                "type": "mip_chest_led",
+                                "id": "ship23",
+                                "fields": {
+                                  "COLOUR": "#000000"
+                                },
+                                "next": {
+                                  "block": {
+                                    "type": "mip_wait",
+                                    "id": "ship24",
+                                    "fields": {
+                                      "SECS": 0.3
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "shipped": true
+}

@@ -1,0 +1,71 @@
+{
+  "name": "Patrol",
+  "colour": 330,
+  "params": [
+    {
+      "name": "laps",
+      "default": 2
+    }
+  ],
+  "workspace": {
+    "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+        {
+          "type": "mip_chest_led",
+          "id": "ship4",
+          "fields": {
+            "COLOUR": "#0066ff"
+          },
+          "next": {
+            "block": {
+              "type": "controls_repeat_ext",
+              "id": "ship5",
+              "inputs": {
+                "TIMES": {
+                  "block": {
+                    "type": "custom_param",
+                    "id": "ship6",
+                    "fields": {
+                      "NAME": "laps"
+                    }
+                  }
+                },
+                "DO": {
+                  "block": {
+                    "type": "mip_drive_time",
+                    "id": "ship7",
+                    "fields": {
+                      "DIR": "forward",
+                      "SPEED": 20,
+                      "TIME": 1000
+                    },
+                    "next": {
+                      "block": {
+                        "type": "mip_turn",
+                        "id": "ship8",
+                        "fields": {
+                          "DIR": "right",
+                          "DEG": 90,
+                          "SPEED": 12
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "next": {
+                "block": {
+                  "type": "mip_stop",
+                  "id": "ship9",
+                  "fields": {}
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "shipped": true
+}

@@ -127,3 +127,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Generated block programs (keep the JSON, keep the generated .py alongside it)
+# programs/ and blocks/ are intentionally versioned.

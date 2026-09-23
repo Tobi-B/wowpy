@@ -222,7 +222,7 @@ COMMANDS = (
     # Position & balance
     Command("Get status", CMD_GET_STATUS, "Position & balance", query=True),
     Command("Get up", CMD_GET_UP, "Position & balance",
-            (Param("from", 0, 2, 2, choices={0: "from front", 1: "from back", 2: "either"}),)),
+            (Param("direction", 0, 2, 2, choices={0: "from front", 1: "from back", 2: "either"}),)),
     Command("Set position", CMD_SET_POSITION, "Position & balance",
             (Param("position", 0, 1, 0, choices={0: "on back", 1: "face down"}),)),
     Command("Get weight", CMD_GET_WEIGHT, "Position & balance", query=True),
@@ -260,6 +260,7 @@ COMMANDS = (
 FAMILIES = ("LEDs", "Driving", "Position & balance", "Sound", "Game modes", "Sensing", "IR", "System", "Raw")
 
 COMMANDS_BY_NAME = {c.name: c for c in COMMANDS}
+NAMES_BY_OPCODE = {c.opcode: c.name for c in COMMANDS}
 
 
 def parse_raw(text):

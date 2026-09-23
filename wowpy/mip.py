@@ -42,14 +42,16 @@ class MiP:
     (or anything with the same ``write_gatt_char``/``start_notify`` interface)
     can be injected via ``client`` for testing or for the mock robot.
 
-    ``on_notification(data: bytes)`` is called for every decoded notification;
-    ``on_disconnect()`` when the link drops.
+    ``on_notification(data: bytes)`` is called for every decoded notification,
+    ``on_send(data: bytes)`` for every command written, ``on_disconnect()``
+    when the link drops.
     """
 
     def __init__(self, device, *, timeout=20.0, client=None):
         self._client = client or BleakClient(device, timeout=timeout, disconnected_callback=self._on_disconnect)
         self._responses = asyncio.Queue()
         self.on_notification = None
+        self.on_send = None
         self.on_disconnect = None
 
     @classmethod
@@ -122,7 +124,10 @@ class MiP:
 
     async def send_bytes(self, data):
         """Write a raw, pre-encoded command without waiting for a reply."""
-        await self._client.write_gatt_char(SEND_CHARACTERISTIC, bytes(data), response=False)
+        data = bytes(data)
+        if self.on_send:
+            self.on_send(data)
+        await self._client.write_gatt_char(SEND_CHARACTERISTIC, data, response=False)
 
     async def send(self, opcode, *params):
         """Write a raw command without waiting for a reply."""
@@ -187,6 +192,24 @@ class MiP:
         (negative = left). Both encode into the MiP's 0x01-0x80 ranges.
         """
         await self._run("Drive", speed=protocol.clamp(speed, -32, 32), turn=protocol.clamp(turn, -32, 32))
+
+    async def drive_for(self, seconds, speed, turn=0, interval=0.04):
+        """Continuous drive for ``seconds``: resends every ``interval`` s, then stops.
+
+        Always ends with :meth:`stop`, even when cancelled, so a program can
+        never leave the robot rolling.
+        """
+        loop = asyncio.get_running_loop()
+        end = loop.time() + max(0.0, float(seconds))
+        try:
+            while True:
+                await self.drive(speed, turn)
+                remaining = end - loop.time()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(interval, remaining))
+        finally:
+            await self.stop()
 
     async def drive_forward(self, speed, time_ms):
         """Drive forward at ``speed`` 0..30 for ``time_ms`` (7 ms steps, max ~1.8 s)."""

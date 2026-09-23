@@ -7,6 +7,7 @@ setup(
     author_email="tbbruns@gmx.de",
     packages=['wowpy', 'wowpy.dashboard', 'wowpy.test'],
     package_data={'wowpy.dashboard': ['static/*']},
+    entry_points={'console_scripts': ['wowpy-run = wowpy.run:main']},
     license='LICENSE',
     description='Python package for simple robot control with blockpy etc.',
     long_description=open('README.md').read(),
