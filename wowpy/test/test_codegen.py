@@ -234,3 +234,151 @@ def test_hat_ids_that_differ_only_in_punctuation_get_distinct_functions():
 def test_punctuated_block_ids_are_safe_in_step_calls():
     code = codegen.generate(ws(start(blk("mip_stop", "|![gg4[t@/O@.K)oz??R"))))
     compile(code, "<step>", "exec")
+
+
+# -- Blockly's own "Functions" category -------------------------------------
+
+def proc_def(name, params=(), body=None, ret=None, id_="def"):
+    b = {"type": "procedures_defreturn" if ret else "procedures_defnoreturn", "id": id_,
+         "fields": {"NAME": name},
+         "extraState": {"params": [{"name": p, "id": f"p{i}"} for i, p in enumerate(params)]},
+         "inputs": {}}
+    if body:
+        b["inputs"]["STACK"] = {"block": body}
+    if ret:
+        b["inputs"]["RETURN"] = {"block": ret}
+    return b
+
+
+def proc_call(name, args=(), id_="call", returns=False):
+    b = {"type": "procedures_callreturn" if returns else "procedures_callnoreturn", "id": id_,
+         "extraState": {"name": name, "params": [f"a{i}" for i in range(len(args))]},
+         "inputs": {f"ARG{i}": {"block": a} for i, a in enumerate(args)}}
+    return b
+
+
+def var(name, id_="v"):
+    return {"type": "variables_get", "id": id_, "fields": {"VAR": {"name": name}}}
+
+
+def test_procedure_without_return_generates_a_function():
+    code = codegen.generate(ws(
+        proc_def("do something", body=blk("mip_stop", "s")),
+        start(proc_call("do something"))))
+    assert "async def do_something(mip):" in code
+    assert "await mip.stop()" in code
+    assert "await do_something(mip)" in code
+    compile(code, "<proc>", "exec")
+
+
+def test_procedure_parameters_become_arguments():
+    code = codegen.generate(ws(
+        proc_def("drive it", ["how far"],
+                 body={"type": "controls_repeat_ext", "id": "r",
+                       "inputs": {"TIMES": {"block": var("how far")},
+                                  "DO": {"block": blk("mip_stop", "s")}}}),
+        start(proc_call("drive it", [blk("math_number", "n", {"NUM": 3})]))))
+    assert "async def drive_it(mip, how_far):" in code
+    assert "for _ in range(int(how_far)):" in code
+    assert "await drive_it(mip, 3)" in code
+    compile(code, "<params>", "exec")
+
+
+def test_procedure_with_return_value():
+    code = codegen.generate(ws(
+        proc_def("double", ["x"], ret={"type": "math_arithmetic", "id": "m", "fields": {"OP": "MULTIPLY"},
+                                       "inputs": {"A": {"block": var("x")},
+                                                  "B": {"block": blk("math_number", "n", {"NUM": 2})}}}),
+        start({"type": "variables_set", "id": "vs", "fields": {"VAR": {"name": "out"}},
+               "inputs": {"VALUE": {"block": proc_call("double", [blk("math_number", "n2", {"NUM": 5})],
+                                                       id_="c", returns=True)}}})))
+    assert "async def double(mip, x):" in code
+    assert "return (x * 2)" in code
+    assert "out = await double(mip, 5)" in code
+    compile(code, "<ret>", "exec")
+
+
+def test_procedure_defined_after_its_call_still_resolves():
+    code = codegen.generate(ws(
+        start(proc_call("later")),
+        proc_def("later", body=blk("mip_stop", "s"))))
+    assert "async def later(mip):" in code
+    assert "await later(mip)" in code
+    compile(code, "<order>", "exec")
+
+
+def test_unused_procedure_is_still_generated():
+    code = codegen.generate(ws(proc_def("spare", body=blk("mip_stop", "s")), start(blk("mip_stop", "x"))))
+    assert "async def spare(mip):" in code
+    compile(code, "<unused>", "exec")
+
+
+def test_empty_procedure_body_is_valid_python():
+    code = codegen.generate(ws(proc_def("empty"), start(proc_call("empty"))))
+    assert "async def empty(mip):" in code
+    compile(code, "<empty>", "exec")
+
+
+def test_procedure_and_custom_block_names_do_not_collide():
+    """"Warn and turn" as a custom block and "warn-and-turn" as a procedure."""
+    code = codegen.generate(
+        ws(proc_def("warn and turn", body=blk("mip_stop", "s"), id_="d1"),
+           start({"type": "Warn and turn", "id": "u",
+                  "inputs": {"ANGLE": {"block": blk("math_number", "n", {"NUM": 90})}},
+                  "next": {"block": proc_call("warn and turn", id_="c1")}})),
+        [WARN])
+    assert code.count("async def warn_and_turn(") == 1
+    assert code.count("async def warn_and_turn_2(") == 1
+    compile(code, "<collide>", "exec")
+
+
+def test_procedure_named_main_does_not_shadow_the_program():
+    code = codegen.generate(ws(proc_def("main", body=blk("mip_stop", "s")), start(proc_call("main"))))
+    assert "async def main(mip):" in code          # the program entry point
+    assert "async def main_2(mip):" in code        # the user's procedure
+    assert "await main_2(mip)" in code
+    compile(code, "<main>", "exec")
+
+
+def test_if_return_inside_a_procedure():
+    code = codegen.generate(ws(
+        proc_def("check", ["x"],
+                 body={"type": "procedures_ifreturn", "id": "ir",
+                       "inputs": {"CONDITION": {"block": {"type": "logic_boolean", "id": "b",
+                                                          "fields": {"BOOL": "TRUE"}}}}},
+                 ret=blk("math_number", "n", {"NUM": 1})),
+        start(blk("mip_stop", "x"))))
+    assert "if True:" in code
+    assert "return" in code
+    compile(code, "<ifreturn>", "exec")
+
+
+def test_variable_references_are_resolved_by_id():
+    """Blockly saves a variable reference as an id; the name comes from the table."""
+    workspace = {
+        "blocks": {"languageVersion": 0, "blocks": [
+            proc_def("drive it", ["how far"],
+                     body={"type": "controls_repeat_ext", "id": "r",
+                           "inputs": {"TIMES": {"block": {"type": "variables_get", "id": "v",
+                                                          "fields": {"VAR": {"id": "p0"}}}},
+                                      "DO": {"block": blk("mip_stop", "s")}}}),
+            start(proc_call("drive it", [blk("math_number", "n", {"NUM": 3})]))]},
+        "variables": [{"id": "p0", "name": "how far"}],
+    }
+    code = codegen.generate(workspace)
+    assert "async def drive_it(mip, how_far):" in code
+    assert "for _ in range(int(how_far)):" in code
+    assert "p0" not in code
+    compile(code, "<varid>", "exec")
+
+
+def test_plain_variable_blocks_use_the_variable_name():
+    workspace = {
+        "blocks": {"languageVersion": 0, "blocks": [start(
+            {"type": "variables_set", "id": "vs", "fields": {"VAR": {"id": "x1"}},
+             "inputs": {"VALUE": {"block": blk("mip_battery", "bat")}},
+             "next": {"block": blk("mip_play_sound", "p", {"INDEX": 1})}})]},
+        "variables": [{"id": "x1", "name": "akku"}],
+    }
+    code = codegen.generate(workspace)
+    assert "akku = await sensors.battery()" in code

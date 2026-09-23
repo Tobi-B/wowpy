@@ -268,8 +268,10 @@
   // A command block lying loose in the workspace is not part of the program;
   // without a hint the Python tab just says "pass" and nothing runs.
   function showOrphans() {
+    // Procedure definitions are top-level by design, so they are not loose.
+    const DEFS = new Set(["procedures_defnoreturn", "procedures_defreturn"]);
     const loose = workspace.getTopBlocks(false)
-      .filter(b => !HAT_TYPES.has(b.type) && !b.outputConnection);
+      .filter(b => !HAT_TYPES.has(b.type) && !DEFS.has(b.type) && !b.outputConnection);
     const box = $("#orphans");
     box.classList.toggle("show", loose.length > 0);
     if (loose.length) {
