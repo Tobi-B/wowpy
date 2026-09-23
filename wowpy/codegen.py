@@ -42,6 +42,7 @@ class Generator:
         self.custom = {c["name"]: c for c in (custom_blocks or [])}
         self._emitted = []          # generated custom-block functions
         self._emitting = set()      # cycle guard
+        self._idents = {}           # block id -> unique identifier fragment
 
     # -- values ------------------------------------------------------------
 
@@ -175,7 +176,7 @@ class Generator:
         for name in re.findall(r"\{\$(\w+)\}", out):
             out = out.replace("{$" + name + "}", self._input_value(inputs, name))
         # {id!name} -> id usable inside an identifier; {id} -> id as a literal
-        out = out.replace("{id!name}", re.sub(r"\W", "_", str(bid)))
+        out = out.replace("{id!name}", self._ident(bid))
         out = out.replace("{id}", repr(bid))
         # {FIELD}, {FIELD!r} (quoted) and {FIELD!rgb} ("#rrggbb" -> "r, g, b").
         # A field promoted to a custom-block parameter is an input, not a field.
@@ -194,6 +195,22 @@ class Generator:
                 text = str(value)
             out = out.replace("{" + name + (bang or "") + "}", text)
         return out
+
+    def _ident(self, bid):
+        """A unique identifier fragment for ``bid``.
+
+        Blockly ids contain characters that are not valid in a Python name, and
+        stripping them can make two different ids collide - which would silently
+        merge two event handlers into one function.
+        """
+        if bid not in self._idents:
+            base = re.sub(r"\W", "_", str(bid)) or "block"
+            candidate, n = base, 1
+            while candidate in self._idents.values():
+                n += 1
+                candidate = f"{base}_{n}"
+            self._idents[bid] = candidate
+        return self._idents[bid]
 
     # -- custom blocks -----------------------------------------------------
 

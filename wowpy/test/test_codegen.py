@@ -215,3 +215,22 @@ def test_shipped_blocks_generate_valid_python():
 ])
 def test_slug(name, expected):
     assert codegen.slug(name) == expected
+
+
+def test_hat_ids_that_differ_only_in_punctuation_get_distinct_functions():
+    """Blockly ids contain punctuation; stripping it must not merge two hats."""
+    code = codegen.generate(ws(
+        {**blk("mip_on_clap", "a!b", {"N": 1}),
+         "inputs": {"BODY": {"block": blk("mip_play_sound", "s1", {"INDEX": 1})}}},
+        {**blk("mip_on_clap", "a?b", {"N": 2}),
+         "inputs": {"BODY": {"block": blk("mip_play_sound", "s2", {"INDEX": 2})}}}))
+    assert code.count("async def _on_clap_a_b(") == 1
+    assert code.count("async def _on_clap_a_b_2(") == 1
+    assert "program.on_clap(_on_clap_a_b, count=1)" in code
+    assert "program.on_clap(_on_clap_a_b_2, count=2)" in code
+    compile(code, "<ids>", "exec")
+
+
+def test_punctuated_block_ids_are_safe_in_step_calls():
+    code = codegen.generate(ws(start(blk("mip_stop", "|![gg4[t@/O@.K)oz??R"))))
+    compile(code, "<step>", "exec")

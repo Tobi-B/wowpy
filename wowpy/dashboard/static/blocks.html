@@ -48,6 +48,9 @@
   .pane { flex: 1; overflow: auto; padding: 10px 12px; display: none; min-height: 0; }
   .pane.active { display: block; }
   pre#code { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+  #orphans { display: none; margin: 0 0 10px; padding: 7px 9px; border-radius: 6px; font-size: 12px;
+             background: #3a2f16; border: 1px solid var(--warn); color: var(--warn); }
+  #orphans.show { display: block; }
   .entry { display: grid; grid-template-columns: 78px 58px 1fr; gap: 6px; padding: 2px 0;
            border-top: 1px solid var(--line); align-items: baseline;
            font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
@@ -96,7 +99,7 @@
       <button data-pane="log">Log</button>
       <button data-pane="blocks">My blocks</button>
     </div>
-    <div class="pane active" id="pane-code"><pre id="code"></pre></div>
+    <div class="pane active" id="pane-code"><div id="orphans"></div><pre id="code"></pre></div>
     <div class="pane" id="pane-log"><div id="log"></div></div>
     <div class="pane" id="pane-blocks"><div id="customlist"></div></div>
   </aside>
@@ -255,9 +258,26 @@
         const { code } = await api("/api/blocks/code", { workspace: save() });
         $("#code").textContent = code;
       } catch (e) { $("#code").textContent = "// " + e.message; }
+      showOrphans();
     }, 120);
   }
   const save = () => Blockly.serialization.workspaces.save(workspace);
+
+  let HAT_TYPES = new Set();   // filled once the catalogue is loaded
+
+  // A command block lying loose in the workspace is not part of the program;
+  // without a hint the Python tab just says "pass" and nothing runs.
+  function showOrphans() {
+    const loose = workspace.getTopBlocks(false)
+      .filter(b => !HAT_TYPES.has(b.type) && !b.outputConnection);
+    const box = $("#orphans");
+    box.classList.toggle("show", loose.length > 0);
+    if (loose.length) {
+      const what = loose.length === 1 ? "1 block is" : `${loose.length} blocks are`;
+      box.textContent = `${what} not attached to an event block, so they will not run. `
+        + `Drag them inside "when program starts" (or another Events block).`;
+    }
+  }
 
   // ------------------------------------------------------------ highlight
   function highlight(id) {
@@ -472,6 +492,18 @@
     } catch (e) { $("#make-msg").textContent = e.message; }
   };
 
+  function seedStartBlock() {
+    if (workspace.getTopBlocks(false).length) return;
+    Blockly.Events.disable();
+    try {
+      const block = workspace.newBlock("mip_on_start");
+      block.initSvg();
+      block.moveBy(40, 40);
+      workspace.render();
+    } finally { Blockly.Events.enable(); }
+    dirty = false; setTitle();
+  }
+
   async function reloadCustom() {
     customBlocks = await api("/api/blocks/custom", null, "GET");
     for (const def of customBlocks) defineCustomBlock(def);
@@ -500,6 +532,7 @@
     catalogue = await api("/api/blocks/catalogue", null, "GET");
     const meta = await api("/api/commands", null, "GET");
     catalogue.positions = meta.positions;
+    HAT_TYPES = new Set(catalogue.blocks.filter(b => b.shape === "hat").map(b => b.type));
     for (const spec of catalogue.blocks) defineBlock(spec);
     customBlocks = catalogue.custom || [];
     for (const def of customBlocks) defineCustomBlock(def);
@@ -521,6 +554,10 @@ salt: 0,
       trashcan: true, renderer: "zelos",
     });
     renderCustomList();
+
+    // A new workspace starts with the hat, so a dragged command block has
+    // somewhere obvious to go.
+    seedStartBlock();
 
     workspace.addChangeListener(ev => {
       if (ev.isUiEvent) { if (ev.type === Blockly.Events.SELECTED) refreshMakeButton(); return; }
