@@ -48,6 +48,9 @@
   .pane { flex: 1; overflow: auto; padding: 10px 12px; display: none; min-height: 0; }
   .pane.active { display: block; }
   pre#code { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+  #orphans { display: none; margin: 0 0 10px; padding: 7px 9px; border-radius: 6px; font-size: 12px;
+             background: #3a2f16; border: 1px solid var(--warn); color: var(--warn); }
+  #orphans.show { display: block; }
   .entry { display: grid; grid-template-columns: 78px 58px 1fr; gap: 6px; padding: 2px 0;
            border-top: 1px solid var(--line); align-items: baseline;
            font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
@@ -96,7 +99,7 @@
       <button data-pane="log">Log</button>
       <button data-pane="blocks">My blocks</button>
     </div>
-    <div class="pane active" id="pane-code"><pre id="code"></pre></div>
+    <div class="pane active" id="pane-code"><div id="orphans"></div><pre id="code"></pre></div>
     <div class="pane" id="pane-log"><div id="log"></div></div>
     <div class="pane" id="pane-blocks"><div id="customlist"></div></div>
   </aside>
@@ -255,9 +258,37 @@
         const { code } = await api("/api/blocks/code", { workspace: save() });
         $("#code").textContent = code;
       } catch (e) { $("#code").textContent = "// " + e.message; }
+      showOrphans();
     }, 120);
   }
   const save = () => Blockly.serialization.workspaces.save(workspace);
+
+  let HAT_TYPES = new Set();   // filled once the catalogue is loaded
+
+  // A command block lying loose in the workspace is not part of the program;
+  // without a hint the Python tab just says "pass" and nothing runs.
+  function showOrphans() {
+    // Procedure definitions are top-level by design, so they are not loose.
+    const DEFS = new Set(["procedures_defnoreturn", "procedures_defreturn"]);
+    const loose = workspace.getTopBlocks(false)
+      .filter(b => !HAT_TYPES.has(b.type) && !DEFS.has(b.type) && !b.outputConnection);
+    const empty = emptySockets();
+    const notes = [];
+    if (loose.length) {
+      const what = loose.length === 1 ? "1 block is" : `${loose.length} blocks are`;
+      notes.push(`${what} not attached to an event block, so they will not run. `
+        + `Drag them inside "when program starts" (or another Events block).`);
+    }
+    if (empty.length) {
+      const names = [...new Set(empty.map(b => b.type))].join(", ");
+      const what = empty.length === 1 ? "1 block has an empty socket" : `${empty.length} blocks have empty sockets`;
+      notes.push(`${what} (${names}). An empty socket becomes "None" and the program `
+        + `stops with an error - drop a value in.`);
+    }
+    const box = $("#orphans");
+    box.classList.toggle("show", notes.length > 0);
+    box.textContent = notes.join(" ");
+  }
 
   // ------------------------------------------------------------ highlight
   function highlight(id) {
@@ -382,7 +413,8 @@
       Blockly.Events.disable();
       try { Blockly.serialization.workspaces.load(data.workspace, workspace); }
       finally { Blockly.Events.enable(); loading = false; }
-      programName = data.name; dirty = false; setTitle(); $("#dlg-open").close(); scheduleCode();
+      programName = data.name; dirty = false; setTitle(); $("#dlg-open").close();
+      fillEmptyCallArgs(); scheduleCode();
     } catch (e) { $("#open-msg").textContent = e.message; }
   };
   function setTitle() { $("#title").textContent = (programName || "untitled") + (dirty ? " *" : ""); }
@@ -472,6 +504,58 @@
     } catch (e) { $("#make-msg").textContent = e.message; }
   };
 
+  // Blockly creates procedure call blocks with empty argument sockets. An empty
+  // socket generates None, which only fails once the program runs, so fill them
+  // with a shadow number the way the built-in loop blocks do.
+  const CALL_TYPES = new Set(["procedures_callnoreturn", "procedures_callreturn"]);
+
+  function fillEmptyCallArgs() {
+    let added = false;
+    Blockly.Events.disable();
+    try {
+      for (const block of workspace.getAllBlocks(false)) {
+        if (!CALL_TYPES.has(block.type)) continue;
+        for (const input of block.inputList) {
+          if (input.connection?.type !== Blockly.ConnectionType.INPUT_VALUE) continue;
+          if (input.connection.targetBlock()) continue;
+          const shadow = workspace.newBlock("math_number");
+          shadow.setFieldValue(1, "NUM");
+          shadow.setShadow(true);
+          shadow.initSvg();
+          input.connection.connect(shadow.outputConnection);
+          added = true;
+        }
+      }
+    } catch (e) { /* never let this break editing */ }
+    finally { Blockly.Events.enable(); }
+    if (added) workspace.render();
+    return added;
+  }
+
+  // Any other socket left empty still generates None; say so before Run.
+  function emptySockets() {
+    const out = [];
+    for (const block of workspace.getAllBlocks(false)) {
+      for (const input of block.inputList) {
+        if (input.connection?.type !== Blockly.ConnectionType.INPUT_VALUE) continue;
+        if (!input.connection.targetBlock()) out.push(block);
+      }
+    }
+    return out;
+  }
+
+  function seedStartBlock() {
+    if (workspace.getTopBlocks(false).length) return;
+    Blockly.Events.disable();
+    try {
+      const block = workspace.newBlock("mip_on_start");
+      block.initSvg();
+      block.moveBy(40, 40);
+      workspace.render();
+    } finally { Blockly.Events.enable(); }
+    dirty = false; setTitle();
+  }
+
   async function reloadCustom() {
     customBlocks = await api("/api/blocks/custom", null, "GET");
     for (const def of customBlocks) defineCustomBlock(def);
@@ -500,6 +584,7 @@
     catalogue = await api("/api/blocks/catalogue", null, "GET");
     const meta = await api("/api/commands", null, "GET");
     catalogue.positions = meta.positions;
+    HAT_TYPES = new Set(catalogue.blocks.filter(b => b.shape === "hat").map(b => b.type));
     for (const spec of catalogue.blocks) defineBlock(spec);
     customBlocks = catalogue.custom || [];
     for (const def of customBlocks) defineCustomBlock(def);
@@ -522,9 +607,14 @@ salt: 0,
     });
     renderCustomList();
 
+    // A new workspace starts with the hat, so a dragged command block has
+    // somewhere obvious to go.
+    seedStartBlock();
+
     workspace.addChangeListener(ev => {
       if (ev.isUiEvent) { if (ev.type === Blockly.Events.SELECTED) refreshMakeButton(); return; }
       if (!loading) { dirty = true; setTitle(); }
+      fillEmptyCallArgs();
       scheduleCode(); refreshMakeButton();
     });
     scheduleCode();

@@ -42,6 +42,11 @@ class Generator:
         self.custom = {c["name"]: c for c in (custom_blocks or [])}
         self._emitted = []          # generated custom-block functions
         self._emitting = set()      # cycle guard
+        self._idents = {}           # block id -> unique identifier fragment
+        self._fn_names = {}         # ("custom"|"proc", name) -> python identifier
+        self._reserved = {"main", "mip", "program", "sensors", "asyncio", "math", "random"}
+        self._procs = {}            # procedure name -> definition block
+        self._var_names = {}        # Blockly variable id -> its name
 
     # -- values ------------------------------------------------------------
 
@@ -67,6 +72,8 @@ class Generator:
         if t == "custom_param":
             # Reference to a parameter of the enclosing custom block.
             return func_name(fields.get("NAME", "param"))
+        if t == "procedures_callreturn":
+            return self._proc_call(block)
         if t == "logic_compare":
             op = {"EQ": "==", "NEQ": "!=", "LT": "<", "LTE": "<=", "GT": ">", "GTE": ">="}[fields.get("OP", "EQ")]
             return f"({self._input_value(inputs, 'A')} {op} {self._input_value(inputs, 'B')})"
@@ -90,9 +97,19 @@ class Generator:
         return "None"
 
     def _var_name(self, block):
+        """The *name* of a referenced variable.
+
+        Blockly serialises a reference as ``{"id": ...}`` only, so the id has to
+        be resolved through the workspace's variable table - a procedure
+        parameter is named after the variable, and using the id instead would
+        not match the generated function signature.
+        """
         f = block.get("fields", {}).get("VAR")
         if isinstance(f, dict):
-            return f.get("name") or f.get("id") or "var"
+            if f.get("name"):
+                return f["name"]
+            vid = f.get("id")
+            return self._var_names.get(vid, vid or "var")
         return f or "var"
 
     def _input_value(self, inputs, name):
@@ -147,6 +164,15 @@ class Generator:
             name = func_name(self._var_name(block))
             return f"{name} = {name} + {self._input_value(inputs, 'DELTA')}"
 
+        if t == "procedures_callnoreturn":
+            return f"await _step({bid!r})\n{self._proc_call(block)}"
+        if t == "procedures_ifreturn":
+            value = self._input_value(inputs, "VALUE") if "VALUE" in inputs else None
+            ret = f"return {value}" if value is not None else "return"
+            return f"if {self._input_value(inputs, 'CONDITION')}:\n{_indent(ret)}"
+        if t in ("procedures_defnoreturn", "procedures_defreturn"):
+            return ""          # definitions are emitted at module level
+
         if t in self.custom or t.startswith("custom_"):
             return self._custom_call(block)
 
@@ -175,7 +201,7 @@ class Generator:
         for name in re.findall(r"\{\$(\w+)\}", out):
             out = out.replace("{$" + name + "}", self._input_value(inputs, name))
         # {id!name} -> id usable inside an identifier; {id} -> id as a literal
-        out = out.replace("{id!name}", re.sub(r"\W", "_", str(bid)))
+        out = out.replace("{id!name}", self._ident(bid))
         out = out.replace("{id}", repr(bid))
         # {FIELD}, {FIELD!r} (quoted) and {FIELD!rgb} ("#rrggbb" -> "r, g, b").
         # A field promoted to a custom-block parameter is an input, not a field.
@@ -195,6 +221,65 @@ class Generator:
             out = out.replace("{" + name + (bang or "") + "}", text)
         return out
 
+    def _function_name(self, kind, name):
+        """A unique Python identifier for a custom block or a Blockly procedure.
+
+        Custom blocks and procedures share one module namespace, and two names
+        can slug to the same identifier ("do it" / "do-it"), so uniqueness is
+        tracked here rather than per feature.
+        """
+        key = (kind, name)
+        if key not in self._fn_names:
+            base = func_name(name) or "fn"
+            candidate, n = base, 1
+            while candidate in self._reserved or candidate in self._fn_names.values():
+                n += 1
+                candidate = f"{base}_{n}"
+            self._fn_names[key] = candidate
+        return self._fn_names[key]
+
+    def _ident(self, bid):
+        """A unique identifier fragment for ``bid``.
+
+        Blockly ids contain characters that are not valid in a Python name, and
+        stripping them can make two different ids collide - which would silently
+        merge two event handlers into one function.
+        """
+        if bid not in self._idents:
+            base = re.sub(r"\W", "_", str(bid)) or "block"
+            candidate, n = base, 1
+            while candidate in self._idents.values():
+                n += 1
+                candidate = f"{base}_{n}"
+            self._idents[bid] = candidate
+        return self._idents[bid]
+
+    # -- Blockly procedures ("Functions" category) --------------------------
+
+    @staticmethod
+    def _proc_params(block):
+        return [p["name"] for p in (block.get("extraState") or {}).get("params", [])]
+
+    def _proc_call(self, block):
+        state = block.get("extraState") or {}
+        name = state.get("name", "")
+        inputs = block.get("inputs", {})
+        args = ["mip"]
+        for i, _param in enumerate(state.get("params", [])):
+            args.append(self._input_value(inputs, f"ARG{i}"))
+        return f"await {self._function_name('proc', name)}({', '.join(args)})"
+
+    def emit_procedure(self, block):
+        """Generate the function for one 'to <name>' definition block."""
+        name = block.get("fields", {}).get("NAME", "")
+        params = ["mip"] + [func_name(p) for p in self._proc_params(block)]
+        body = self.statements((block.get("inputs", {}).get("STACK") or {}).get("block"))
+        if block.get("type") == "procedures_defreturn":
+            value = self._input_value(block.get("inputs", {}), "RETURN")
+            body = (body if body != "pass" else "") + f"\nreturn {value}"
+            body = body.lstrip("\n")
+        return f"async def {self._function_name('proc', name)}({', '.join(params)}):\n{_indent(body)}"
+
     # -- custom blocks -----------------------------------------------------
 
     def _custom_call(self, block):
@@ -205,19 +290,20 @@ class Generator:
         self.emit_custom(name)
         args = ["mip"] + [self._input_value(block.get("inputs", {}), p["name"].upper())
                           for p in definition.get("params", [])]
-        return f"await _step({block.get('id', '')!r})\nawait {func_name(name)}({', '.join(args)})"
+        return f"await _step({block.get('id', '')!r})\nawait {self._function_name('custom', name)}({', '.join(args)})"
 
     def emit_custom(self, name):
         """Generate the function for custom block ``name`` once."""
         definition = self.custom.get(name)
         if definition is None or name in self._emitting:
             return
-        if any(f"async def {func_name(name)}(" in e for e in self._emitted):
+        fn = self._function_name("custom", name)
+        if any(f"async def {fn}(" in e for e in self._emitted):
             return
         self._emitting.add(name)
         params = ["mip"] + [func_name(p["name"]) for p in definition.get("params", [])]
         body = self.statements(self._first_block(definition.get("workspace", {})))
-        self._emitted.append(f"async def {func_name(name)}({', '.join(params)}):\n{_indent(body)}")
+        self._emitted.append(f"async def {fn}({', '.join(params)}):\n{_indent(body)}")
         self._emitting.discard(name)
 
     @staticmethod
@@ -228,7 +314,16 @@ class Generator:
     # -- whole workspace ---------------------------------------------------
 
     def generate(self, workspace, source="the block editor"):
+        self._var_names = {v["id"]: v["name"] for v in workspace.get("variables", []) if v.get("id")}
         top = (workspace.get("blocks") or {}).get("blocks") or []
+
+        # Reserve every procedure's name before generating anything, so a call
+        # that appears before its definition resolves to the same function.
+        proc_defs = [b for b in top if b.get("type") in ("procedures_defnoreturn", "procedures_defreturn")]
+        for block in proc_defs:
+            self._function_name("proc", block.get("fields", {}).get("NAME", ""))
+        proc_parts = [self.emit_procedure(block) for block in proc_defs]
+
         main_parts, event_parts = [], []
         for block in top:
             t = block.get("type")
@@ -239,7 +334,8 @@ class Generator:
             (main_parts if t == "mip_on_start" else event_parts).append(code)
 
         chunks = [HEADER.format(source=source)]
-        chunks.extend(self._emitted)
+        chunks.extend(self._emitted)      # custom blocks, filled while rendering
+        chunks.extend(proc_parts)
         chunks.extend(main_parts)
         chunks.extend(event_parts)
         if len(chunks) == 1:
@@ -248,14 +344,4 @@ class Generator:
 
 
 def generate(workspace, custom_blocks=None, source="the block editor"):
-    gen = Generator(custom_blocks)
-    # Custom blocks used anywhere must be emitted before the code that calls them.
-    body = gen.generate(workspace, source)
-    if gen._emitted:
-        # Re-render so the emitted functions appear above their callers.
-        gen2 = Generator(custom_blocks)
-        for name in list(gen.custom):
-            if f"{func_name(name)}(" in body:
-                gen2.emit_custom(name)
-        body = gen2.generate(workspace, source)
-    return body
+    return Generator(custom_blocks).generate(workspace, source)

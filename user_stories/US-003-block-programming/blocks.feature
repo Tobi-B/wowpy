@@ -151,6 +151,47 @@ Feature: Block programming
       Given the workspace contains: when program starts → set variable b to battery %
       Then the "Python" tab contains "b = await sensors.battery()"
 
+  # -------------------------------------------------------- Blockly functions
+
+  Rule: Blockly's own Functions blocks become Python functions
+
+    Scenario: A function definition and its call generate code
+      Given the workspace contains a function "blinken" with the parameter "wie oft"
+      And its body repeats "wie oft" times: chest LED red, wait 0.1 s, chest LED off
+      And "when program starts" calls blinken with 3
+      Then the "Python" tab contains "async def blinken(mip, wie_oft):"
+      And it contains "await blinken(mip, 3)"
+      And running it against the mock robot sends three red/off LED pairs
+
+    Scenario: A function with a return value
+      Given the workspace contains a function "doppelt" with parameter "x" returning x * 2
+      Then the "Python" tab contains "async def doppelt(mip, x):" and "return (x * 2)"
+
+    Scenario: A call placed above its definition still resolves
+      Given "when program starts" calls "spaeter" and the definition sits below it
+      Then the generated code defines and calls "spaeter" without error
+
+    Scenario: A function named like the program entry point does not shadow it
+      Given the workspace contains a function named "main"
+      Then the generated code keeps "async def main(mip):" as the program
+      And the user's function is generated under a different name
+
+    Scenario: Variable names come from the workspace, not from Blockly's ids
+      Given a function whose parameter is used inside its body
+      Then the generated body uses the parameter's name, not its Blockly id
+      And running the program does not raise a NameError
+
+    Scenario: An empty argument socket is filled with a visible default
+      Given the workspace contains a function "piepen" with the parameter "wie oft"
+      When I drag a "piepen" call into "when program starts"
+      Then its argument socket shows a grey default value
+      And the generated code passes that value instead of "None"
+
+    Scenario: Any other empty socket is called out before running
+      Given an "if" block without a condition
+      Then the editor shows "1 block has an empty socket (controls_if)"
+      And the hint explains that an empty socket becomes "None" and stops the program
+
   # ------------------------------------------------------------- custom blocks
 
   Rule: Blocks can be composed from other blocks and reused
