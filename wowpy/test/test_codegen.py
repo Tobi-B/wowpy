@@ -382,3 +382,28 @@ def test_plain_variable_blocks_use_the_variable_name():
     }
     code = codegen.generate(workspace)
     assert "akku = await sensors.battery()" in code
+
+
+def test_empty_value_socket_becomes_none():
+    """An unplugged socket must not silently default to something plausible.
+
+    The editor fills procedure-call arguments with a shadow number and warns
+    about any other empty socket; if one still reaches the generator, the
+    program should fail loudly at that block rather than run with a guess.
+    """
+    # Blockly's shape for "parameter declared, socket empty".
+    call = {"type": "procedures_callnoreturn", "id": "c",
+            "extraState": {"name": "piepen", "params": ["wie oft"]}}
+    code = codegen.generate(ws(
+        proc_def("piepen", ["wie oft"], body=blk("mip_play_sound", "s", {"INDEX": 3})),
+        start(call)))
+    assert "await piepen(mip, None)" in code
+    compile(code, "<empty>", "exec")
+
+
+def test_procedure_call_with_its_argument_supplied():
+    code = codegen.generate(ws(
+        proc_def("piepen", ["wie oft"], body=blk("mip_play_sound", "s", {"INDEX": 3})),
+        start(proc_call("piepen", [blk("math_number", "n", {"NUM": 1})]))))
+    assert "await piepen(mip, 1)" in code
+    compile(code, "<filled>", "exec")

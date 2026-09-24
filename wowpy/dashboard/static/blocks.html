@@ -272,13 +272,22 @@
     const DEFS = new Set(["procedures_defnoreturn", "procedures_defreturn"]);
     const loose = workspace.getTopBlocks(false)
       .filter(b => !HAT_TYPES.has(b.type) && !DEFS.has(b.type) && !b.outputConnection);
-    const box = $("#orphans");
-    box.classList.toggle("show", loose.length > 0);
+    const empty = emptySockets();
+    const notes = [];
     if (loose.length) {
       const what = loose.length === 1 ? "1 block is" : `${loose.length} blocks are`;
-      box.textContent = `${what} not attached to an event block, so they will not run. `
-        + `Drag them inside "when program starts" (or another Events block).`;
+      notes.push(`${what} not attached to an event block, so they will not run. `
+        + `Drag them inside "when program starts" (or another Events block).`);
     }
+    if (empty.length) {
+      const names = [...new Set(empty.map(b => b.type))].join(", ");
+      const what = empty.length === 1 ? "1 block has an empty socket" : `${empty.length} blocks have empty sockets`;
+      notes.push(`${what} (${names}). An empty socket becomes "None" and the program `
+        + `stops with an error - drop a value in.`);
+    }
+    const box = $("#orphans");
+    box.classList.toggle("show", notes.length > 0);
+    box.textContent = notes.join(" ");
   }
 
   // ------------------------------------------------------------ highlight
@@ -404,7 +413,8 @@
       Blockly.Events.disable();
       try { Blockly.serialization.workspaces.load(data.workspace, workspace); }
       finally { Blockly.Events.enable(); loading = false; }
-      programName = data.name; dirty = false; setTitle(); $("#dlg-open").close(); scheduleCode();
+      programName = data.name; dirty = false; setTitle(); $("#dlg-open").close();
+      fillEmptyCallArgs(); scheduleCode();
     } catch (e) { $("#open-msg").textContent = e.message; }
   };
   function setTitle() { $("#title").textContent = (programName || "untitled") + (dirty ? " *" : ""); }
@@ -494,6 +504,46 @@
     } catch (e) { $("#make-msg").textContent = e.message; }
   };
 
+  // Blockly creates procedure call blocks with empty argument sockets. An empty
+  // socket generates None, which only fails once the program runs, so fill them
+  // with a shadow number the way the built-in loop blocks do.
+  const CALL_TYPES = new Set(["procedures_callnoreturn", "procedures_callreturn"]);
+
+  function fillEmptyCallArgs() {
+    let added = false;
+    Blockly.Events.disable();
+    try {
+      for (const block of workspace.getAllBlocks(false)) {
+        if (!CALL_TYPES.has(block.type)) continue;
+        for (const input of block.inputList) {
+          if (input.connection?.type !== Blockly.ConnectionType.INPUT_VALUE) continue;
+          if (input.connection.targetBlock()) continue;
+          const shadow = workspace.newBlock("math_number");
+          shadow.setFieldValue(1, "NUM");
+          shadow.setShadow(true);
+          shadow.initSvg();
+          input.connection.connect(shadow.outputConnection);
+          added = true;
+        }
+      }
+    } catch (e) { /* never let this break editing */ }
+    finally { Blockly.Events.enable(); }
+    if (added) workspace.render();
+    return added;
+  }
+
+  // Any other socket left empty still generates None; say so before Run.
+  function emptySockets() {
+    const out = [];
+    for (const block of workspace.getAllBlocks(false)) {
+      for (const input of block.inputList) {
+        if (input.connection?.type !== Blockly.ConnectionType.INPUT_VALUE) continue;
+        if (!input.connection.targetBlock()) out.push(block);
+      }
+    }
+    return out;
+  }
+
   function seedStartBlock() {
     if (workspace.getTopBlocks(false).length) return;
     Blockly.Events.disable();
@@ -564,6 +614,7 @@ salt: 0,
     workspace.addChangeListener(ev => {
       if (ev.isUiEvent) { if (ev.type === Blockly.Events.SELECTED) refreshMakeButton(); return; }
       if (!loading) { dirty = true; setTitle(); }
+      fillEmptyCallArgs();
       scheduleCode(); refreshMakeButton();
     });
     scheduleCode();
