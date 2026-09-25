@@ -20,7 +20,8 @@ from .. import protocol as p
 from ..mip import MiP
 from ..mock import MOCK_ADDRESS, MOCK_NAME, MockClient
 from ..program import Program, ProgramError
-from ..storage import NAME_HINT, NameError_, Store
+from ..blockcode import CodeError, validate as validate_code
+from ..storage import NAME_HINT, NameError_, NameTaken, Store
 
 STATIC = Path(__file__).parent / "static"
 
@@ -426,6 +427,14 @@ class BlockBody(BaseModel):
     colour: int = 330
     params: list = []
     workspace: dict = {}
+    mode: str = "blocks"        # "blocks" | "python"
+    code: str | None = None
+    create: bool = False        # refuse to overwrite an existing block
+
+
+class CodeCheckBody(BaseModel):
+    code: str = ""
+    params: list = []
 
 
 @app.get("/api/blocks/catalogue")
@@ -447,10 +456,54 @@ async def list_custom_blocks():
 
 @app.post("/api/blocks/custom")
 async def save_custom_block(body: BlockBody):
+    data = body.model_dump()
+    create = data.pop("create", False)
     try:
-        return hub.store.save_block(body.model_dump())
+        return hub.store.save_block(data, create=create)
+    except NameTaken as e:
+        raise HTTPException(409, str(e))
+    except CodeError as e:
+        raise HTTPException(422, str(e))
     except NameError_:
         raise HTTPException(422, NAME_HINT)
+
+
+@app.post("/api/blocks/check")
+async def check_block_code(body: CodeCheckBody):
+    """Validate a hand-written block body without saving it."""
+    try:
+        return {"ok": True, "code": validate_code(body.code, body.params)}
+    except CodeError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/blocks/custom/{name}/body")
+async def custom_block_body(name: str):
+    """The Python this block generates - what "convert to Python" starts from."""
+    try:
+        definition = hub.store.load_block(name)
+        return {"name": name, "mode": definition.get("mode", "blocks"),
+                "params": definition.get("params", []),
+                "code": hub.store.block_body(name),
+                "has_workspace": bool(definition.get("workspace", {}).get("blocks"))}
+    except NameError_:
+        raise HTTPException(422, NAME_HINT)
+    except FileNotFoundError:
+        raise HTTPException(404, f"no block named {name!r}")
+
+
+@app.post("/api/blocks/custom/{name}/regenerate")
+async def regenerate_custom_block(name: str):
+    """Drop the hand-written code and go back to generating from the blocks."""
+    try:
+        definition = hub.store.load_block(name)
+    except FileNotFoundError:
+        raise HTTPException(404, f"no block named {name!r}")
+    if not definition.get("workspace", {}).get("blocks"):
+        raise HTTPException(409, f"{name} has no blocks to regenerate from")
+    definition.pop("mode", None)
+    definition.pop("code", None)
+    return hub.store.save_block(definition)
 
 
 @app.delete("/api/blocks/custom/{name}")

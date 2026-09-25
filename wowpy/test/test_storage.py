@@ -96,3 +96,66 @@ def test_saving_a_program_uses_custom_blocks(store):
 def test_shipped_blocks_are_present_in_the_project():
     names = {b["name"] for b in Store().list_blocks()}
     assert names >= {"Celebrate", "Patrol", "Look around", "Alarm", "Stand up and centre"}
+
+
+# -- Python blocks (US-005) ------------------------------------------------
+
+PY = {"name": "Suchlauf", "colour": 200, "mode": "python",
+      "params": [{"name": "sekunden", "default": 5}],
+      "code": "await mip.drive(12, 8)\nawait mip.stop()"}
+
+
+def test_save_python_block(store):
+    data = store.save_block(PY)
+    assert data["mode"] == "python"
+    assert "workspace" not in data          # written from scratch
+    assert store.load_block("Suchlauf")["code"] == PY["code"]
+
+
+def test_python_block_code_is_validated_before_writing(store):
+    from wowpy.blockcode import CodeError
+    with pytest.raises(CodeError, match="kein await"):
+        store.save_block({**PY, "code": "while True:\n    pass"})
+    assert not (store.blocks / "suchlauf.json").exists()
+
+    with pytest.raises(CodeError, match="Zeile 1"):
+        store.save_block({**PY, "code": "await mip.stop("})
+    assert not (store.blocks / "suchlauf.json").exists()
+
+
+def test_converting_keeps_the_workspace_as_provenance(store):
+    store.save_block(WARN)                                   # block mode
+    store.save_block({**WARN, "mode": "python", "code": "await mip.stop()"})
+    data = store.load_block("Warn and turn")
+    assert data["mode"] == "python"
+    assert data["workspace"] == WARN["workspace"]
+
+
+def test_create_refuses_an_existing_name(store):
+    from wowpy.storage import NameTaken
+    store.save_block(PY)
+    with pytest.raises(NameTaken):
+        store.save_block({**PY, "code": "await mip.stop()"}, create=True)
+    store.save_block({**PY, "code": "await mip.stop()"})      # editing is fine
+    assert store.load_block("Suchlauf")["code"] == "await mip.stop()"
+
+
+def test_unmanaged_fields_survive_a_round_trip(store):
+    store.save_block({**WARN, "shipped": True})
+    store.save_block({**store.load_block("Warn and turn"), "mode": "python", "code": "await mip.stop()"})
+    back = store.load_block("Warn and turn")
+    back.pop("mode"), back.pop("code")
+    store.save_block(back)
+    assert store.load_block("Warn and turn")["shipped"] is True
+
+
+def test_block_body_seeds_a_conversion_without_step_calls(store):
+    store.save_block(WARN)
+    body = store.block_body("Warn and turn")
+    assert "_step" not in body
+    assert body == "await mip.set_chest_led(255, 0, 0)"
+
+
+def test_block_body_of_a_python_block_is_its_code(store):
+    store.save_block(PY)
+    assert store.block_body("Suchlauf") == PY["code"]

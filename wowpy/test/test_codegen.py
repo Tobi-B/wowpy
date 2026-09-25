@@ -407,3 +407,71 @@ def test_procedure_call_with_its_argument_supplied():
         start(proc_call("piepen", [blk("math_number", "n", {"NUM": 1})]))))
     assert "await piepen(mip, 1)" in code
     compile(code, "<filled>", "exec")
+
+
+# -- Python blocks (US-005) -------------------------------------------------
+
+PY_WARN = {
+    "name": "Warn and turn", "colour": 20, "mode": "python",
+    "params": [{"name": "angle", "default": 90}],
+    "code": "await mip.set_chest_led(255, 0, 0)\nawait mip.turn_left(angle, 12)",
+}
+
+
+def test_python_block_body_is_indented_into_the_function():
+    code = codegen.generate(
+        ws(start({"type": "Warn and turn", "id": "u",
+                  "inputs": {"ANGLE": {"block": blk("math_number", "n", {"NUM": 90})}}})),
+        [PY_WARN])
+    assert "async def warn_and_turn(mip, angle):\n    await mip.set_chest_led(255, 0, 0)\n    await mip.turn_left(angle, 12)" in code
+    assert "await warn_and_turn(mip, 90)" in code
+    compile(code, "<py>", "exec")
+
+
+def test_python_block_used_twice_is_generated_once():
+    use = {"type": "Warn and turn", "id": "u1",
+           "inputs": {"ANGLE": {"block": blk("math_number", "n1", {"NUM": 45})}},
+           "next": {"block": {"type": "Warn and turn", "id": "u2",
+                              "inputs": {"ANGLE": {"block": blk("math_number", "n2", {"NUM": 90})}}}}}
+    code = codegen.generate(ws(start(use)), [PY_WARN])
+    assert code.count("async def warn_and_turn(") == 1
+    assert "await warn_and_turn(mip, 45)" in code and "await warn_and_turn(mip, 90)" in code
+
+
+def test_python_block_may_import():
+    definition = {**PY_WARN, "code": "import random\nawait mip.turn_left(random.randint(1, angle), 12)"}
+    code = codegen.generate(ws(start(blk("mip_stop", "s"))), [definition])
+    assert "    import random" in code
+    compile(code, "<import>", "exec")
+
+
+def test_every_defined_block_is_emitted_even_when_unused():
+    """A hand-written body may call another block's function by name."""
+    caller = {"name": "Doppelt warnen", "colour": 330, "mode": "python", "params": [],
+              "code": "await warn_and_turn(mip, 90)\nawait warn_and_turn(mip, 180)"}
+    code = codegen.generate(
+        ws(start({"type": "Doppelt warnen", "id": "u"})), [PY_WARN, caller])
+    assert "async def warn_and_turn(mip, angle):" in code      # never called from a block
+    assert "async def doppelt_warnen(mip):" in code
+    compile(code, "<dep>", "exec")
+
+
+def test_block_mode_blocks_are_unaffected():
+    code = codegen.generate(ws(start({"type": "Warn and turn", "id": "u",
+                                      "inputs": {"ANGLE": {"block": blk("math_number", "n", {"NUM": 90})}}})),
+                            [WARN])
+    assert "await mip.play_sound(3)" in code       # from the stored workspace
+
+
+def test_empty_python_body_generates_pass():
+    definition = {**PY_WARN, "code": ""}
+    code = codegen.generate(ws(start(blk("mip_stop", "s"))), [definition])
+    assert "async def warn_and_turn(mip, angle):\n    pass" in code
+    compile(code, "<empty-body>", "exec")
+
+
+def test_indented_python_body_is_dedented():
+    definition = {**PY_WARN, "code": "    await mip.stop()\n    await mip.play_sound(1)"}
+    code = codegen.generate(ws(start(blk("mip_stop", "s"))), [definition])
+    assert "async def warn_and_turn(mip, angle):\n    await mip.stop()\n    await mip.play_sound(1)" in code
+    compile(code, "<dedent>", "exec")

@@ -10,6 +10,7 @@ plus the custom block definitions from ``blocks/``. Output is a module defining
 """
 
 import re
+import textwrap
 
 from .blocks import BLOCKS_BY_TYPE
 
@@ -34,6 +35,12 @@ def slug(name):
 
 def func_name(name):
     return slug(name).replace("-", "_")
+
+
+def normalise_code(code):
+    """A hand-written block body, ready to be indented into a function."""
+    body = textwrap.dedent(str(code or "")).strip("\n")
+    return body if body.strip() else "pass"
 
 
 class Generator:
@@ -302,7 +309,10 @@ class Generator:
             return
         self._emitting.add(name)
         params = ["mip"] + [func_name(p["name"]) for p in definition.get("params", [])]
-        body = self.statements(self._first_block(definition.get("workspace", {})))
+        if definition.get("mode") == "python":
+            body = normalise_code(definition.get("code"))
+        else:
+            body = self.statements(self._first_block(definition.get("workspace", {})))
         self._emitted.append(f"async def {fn}({', '.join(params)}):\n{_indent(body)}")
         self._emitting.discard(name)
 
@@ -323,6 +333,12 @@ class Generator:
         for block in proc_defs:
             self._function_name("proc", block.get("fields", {}).get("NAME", ""))
         proc_parts = [self.emit_procedure(block) for block in proc_defs]
+
+        # Every defined custom block is emitted, whether or not a block calls
+        # it: a hand-written Python body may call another block's function by
+        # name, and that dependency is invisible to this generator (US-005).
+        for name in list(self.custom):
+            self.emit_custom(name)
 
         main_parts, event_parts = [], []
         for block in top:

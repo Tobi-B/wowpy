@@ -330,3 +330,134 @@ def test_editing_a_custom_block_changes_every_use(client):
     assert "await mip.play_sound(7)" in code
     assert "await mip.play_sound(3)" not in code
     assert code.count("await warn(mip)") == 2
+
+
+# -- Python blocks (US-005) -------------------------------------------------
+
+PY_BLOCK = {"name": "Suchlauf", "colour": 200, "mode": "python",
+            "params": [{"name": "sekunden", "default": 5}],
+            "code": "await mip.drive(12, 8)\nawait mip.stop()"}
+
+
+def test_check_accepts_valid_code(client):
+    r = client.post("/api/blocks/check", json={"code": "await mip.stop()", "params": []})
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+
+@pytest.mark.parametrize("code, message", [
+    ("while True:\n    pass", "kein await"),
+    ("await mip.stop(", "Zeile 1"),
+    ("", "mindestens eine Zeile"),
+])
+def test_check_refuses_bad_code(client, code, message):
+    r = client.post("/api/blocks/check", json={"code": code, "params": []})
+    assert r.status_code == 422
+    assert message in r.json()["detail"]
+
+
+def test_creating_a_python_block(client):
+    r = client.post("/api/blocks/custom", json={**PY_BLOCK, "create": True})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["mode"] == "python" and "workspace" not in data
+    names = {b["name"] for b in client.get("/api/blocks/custom").json()}
+    assert "Suchlauf" in names
+
+
+def test_creating_refuses_an_existing_name(client):
+    client.post("/api/blocks/custom", json={**PY_BLOCK, "create": True})
+    r = client.post("/api/blocks/custom", json={**PY_BLOCK, "create": True})
+    assert r.status_code == 409
+    assert "schon einen Baustein" in r.json()["detail"]
+
+
+def test_saving_invalid_code_is_refused_and_writes_nothing(client):
+    client.post("/api/blocks/custom", json={**PY_BLOCK, "create": True})
+    r = client.post("/api/blocks/custom", json={**PY_BLOCK, "code": "while True:\n    pass"})
+    assert r.status_code == 422 and "kein await" in r.json()["detail"]
+    stored = next(b for b in client.get("/api/blocks/custom").json() if b["name"] == "Suchlauf")
+    assert stored["code"] == PY_BLOCK["code"]
+
+
+def test_body_endpoint_seeds_a_conversion(client):
+    """The body a block generates today, without the highlighting hooks."""
+    r = client.get("/api/blocks/custom/Celebrate/body")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["mode"] == "blocks" and data["has_workspace"] is True
+    assert "_step" not in data["code"]
+    assert "await mip.play_sound(8)" in data["code"]
+
+
+def test_body_endpoint_of_a_python_block_returns_its_code(client):
+    client.post("/api/blocks/custom", json={**PY_BLOCK, "create": True})
+    data = client.get("/api/blocks/custom/Suchlauf/body").json()
+    assert data["mode"] == "python" and data["code"] == PY_BLOCK["code"]
+    assert data["has_workspace"] is False
+
+
+def test_body_endpoint_for_an_unknown_block(client):
+    assert client.get("/api/blocks/custom/Nope/body").status_code == 404
+
+
+def test_converting_then_regenerating(client):
+    before = client.get("/api/blocks/custom/Celebrate/body").json()["code"]
+    definition = next(b for b in client.get("/api/blocks/custom").json() if b["name"] == "Celebrate")
+    client.post("/api/blocks/custom", json={**definition, "mode": "python",
+                                            "code": "await mip.play_sound(20)"})
+    converted = next(b for b in client.get("/api/blocks/custom").json() if b["name"] == "Celebrate")
+    assert converted["mode"] == "python" and converted["workspace"]        # provenance kept
+
+    r = client.post("/api/blocks/custom/Celebrate/regenerate")
+    assert r.status_code == 200
+    back = next(b for b in client.get("/api/blocks/custom").json() if b["name"] == "Celebrate")
+    assert back.get("mode", "blocks") == "blocks" and "code" not in back
+    assert client.get("/api/blocks/custom/Celebrate/body").json()["code"] == before
+
+
+def test_regenerating_a_block_without_a_workspace_is_refused(client):
+    client.post("/api/blocks/custom", json={**PY_BLOCK, "create": True})
+    r = client.post("/api/blocks/custom/Suchlauf/regenerate")
+    assert r.status_code == 409 and "no blocks to regenerate" in r.json()["detail"]
+
+
+def test_python_block_generates_and_runs(connected):
+    connected.post("/api/blocks/custom", json={**PY_BLOCK, "create": True,
+                                               "code": "await mip.play_sound(4)"})
+    workspace = ws(start(blk("Suchlauf", "u", inputs={
+        "SEKUNDEN": {"block": blk("math_number", "n", {"NUM": 1})}})))
+    code = connected.post("/api/blocks/code", json={"workspace": workspace}).json()["code"]
+    assert "async def suchlauf(mip, sekunden):" in code
+    assert "await suchlauf(mip, 1)" in code
+
+    before = len(writes(0x06))
+    connected.post("/api/program/run", json={"workspace": workspace})
+    wait_state(connected, "finished")
+    assert writes(0x06)[before:] == [bytes.fromhex("0604")]
+
+
+def test_a_python_block_may_call_another_blocks_function(connected):
+    """Every defined block is emitted, so the invisible dependency resolves."""
+    connected.post("/api/blocks/custom", json={
+        "name": "Ruft Celebrate", "colour": 330, "mode": "python", "params": [],
+        "code": "await celebrate(mip)", "create": True})
+    workspace = ws(start(blk("Ruft Celebrate", "u")))
+    code = connected.post("/api/blocks/code", json={"workspace": workspace}).json()["code"]
+    assert "async def celebrate(mip):" in code          # never called from a block
+    assert "await celebrate(mip)" in code
+
+    before = len(writes(0x06))
+    connected.post("/api/program/run", json={"workspace": workspace})
+    state = wait_state(connected, "finished", "error")
+    assert state["state"] == "finished", state
+    assert writes(0x06)[before:] == [bytes.fromhex("0608")]   # Celebrate's sound
+
+
+def test_saving_a_program_writes_the_hand_written_body(client):
+    client.post("/api/blocks/custom", json={**PY_BLOCK, "create": True,
+                                            "code": "await mip.play_sound(4)"})
+    workspace = ws(start(blk("Suchlauf", "u", inputs={
+        "SEKUNDEN": {"block": blk("math_number", "n", {"NUM": 1})}})))
+    client.post("/api/programs", json={"name": "test", "workspace": workspace})
+    text = (server.hub.store.programs / "test.py").read_text(encoding="utf-8")
+    assert "async def suchlauf(mip, sekunden):\n    await mip.play_sound(4)" in text
