@@ -63,12 +63,16 @@ emitted and the program dies with a `NameError` at run time. Three ways out,
 to be decided before building:
 
 1. **Emit every defined custom block, always.** Predictable and trivial to
-   implement; costs a few unused functions in the generated file. Recommended.
+   implement; costs a few unused functions in the generated file.
+   **← decided 2026-09-24.**
 2. Scan each Python body for identifiers that match a custom block's function
    name and emit those. No bloat, but a heuristic — a name built at run time
    still fails.
 3. Let the dialog declare dependencies explicitly. Precise, most work, and one
    more thing to keep in sync by hand.
+
+Consequence of the decision: every generated program contains a function for
+every block in `blocks/`, including the shipped ones it does not use.
 
 ## Known risk — worth deciding on before building
 

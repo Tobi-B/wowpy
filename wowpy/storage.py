@@ -10,14 +10,22 @@ import json
 import re
 from pathlib import Path
 
-from . import codegen
+from . import blockcode, codegen
 
 NAME_RE = re.compile(r"^[A-Za-z0-9 \-]+$")
 NAME_HINT = "letters, digits, spaces and dashes only"
+STEP_CALL = re.compile(r"^\s*await _step\(.*\)\s*$")
+
+# Fields save_block() owns; everything else in a stored block is carried over.
+MANAGED_KEYS = {"name", "colour", "params", "workspace", "mode", "code"}
 
 
 class NameError_(ValueError):
     """Rejected program/block name."""
+
+
+class NameTaken(ValueError):
+    """A new block would overwrite an existing one."""
 
 
 def check_name(name):
@@ -61,15 +69,65 @@ class Store:
             raise FileNotFoundError(name)
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def save_block(self, definition):
-        """Store a custom block ``{name, colour, params, workspace}``."""
+    def save_block(self, definition, create=False):
+        """Store a custom block.
+
+        ``{name, colour, params}`` plus either a ``workspace`` (mode
+        ``blocks``) or hand-written ``code`` (mode ``python``). Python bodies
+        are validated first, so a block that cannot run is never written.
+        """
         name = check_name(definition.get("name", ""))
         path, _ = self._paths(self.blocks, name)
+        if create and path.exists():
+            raise NameTaken(f"es gibt schon einen Baustein namens {name!r}")
+        params = definition.get("params", [])
+        data = {"name": name, "colour": definition.get("colour", 330), "params": params}
+
+        if definition.get("mode") == "python":
+            data["mode"] = "python"
+            data["code"] = blockcode.validate(definition.get("code"), params)
+            # Kept so a converted block can be regenerated from where it came
+            # from; a block written from scratch simply has none.
+            workspace = definition.get("workspace")
+            if not workspace and path.exists():
+                workspace = self.load_block(name).get("workspace")
+            if workspace:
+                data["workspace"] = workspace
+        else:
+            data["workspace"] = definition.get("workspace", {})
+
+        # Keep any metadata this class does not manage (e.g. "shipped"), from
+        # the definition passed in and from what is already on disk, so a round
+        # trip through save does not quietly drop it.
+        sources = [definition]
+        if path.exists():
+            sources.append(self.load_block(name))
+        for source in sources:
+            for key, value in source.items():
+                if key not in MANAGED_KEYS and key not in data:
+                    data[key] = value
+
         path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"name": name, "colour": definition.get("colour", 330),
-                "params": definition.get("params", []), "workspace": definition.get("workspace", {})}
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         return data
+
+    def block_body(self, name):
+        """The Python body this block generates today - the seed for a conversion."""
+        definition = self.load_block(name)
+        if definition.get("mode") == "python":
+            return codegen.normalise_code(definition.get("code"))
+        gen = codegen.Generator([definition])
+        gen.emit_custom(definition["name"])
+        if not gen._emitted:
+            return "pass"
+        # drop the "async def ...:" line and one level of indentation
+        lines = gen._emitted[0].split("\n")[1:]
+        lines = [line[4:] if line.startswith("    ") else line for line in lines]
+        # _step() marks the running block for highlighting. A converted block
+        # has no inner blocks to highlight, and the calls would only be noise
+        # in code a person edits by hand.
+        lines = [line for line in lines if not STEP_CALL.match(line)]
+        return "\n".join(lines) or "pass"
 
     def delete_block(self, name):
         path, _ = self._paths(self.blocks, name)

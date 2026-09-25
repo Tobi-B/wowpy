@@ -121,6 +121,52 @@
   <div class="actions"><button data-close>Cancel</button><button id="open-ok" class="primary">Open</button></div>
 </dialog>
 
+<dialog id="dlg-regen">
+  <h3>Aus Blöcken neu erzeugen</h3>
+  <div style="font-size:13px;line-height:1.5">
+    <b id="regen-name"></b> wird wieder aus seinen Blöcken erzeugt.<br>
+    <span style="color:var(--bad)">Der bearbeitete Python-Code geht dabei verloren.</span>
+  </div>
+  <div class="actions">
+    <button data-close>Abbrechen</button>
+    <button id="regen-ok" class="danger">Neu erzeugen</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-code" style="min-width:560px">
+  <h3 id="code-title">Python-Baustein</h3>
+  <div class="row">
+    <label>Name <input id="code-name" placeholder="suchlauf"></label>
+    <label>Farbe <input id="code-colour" type="number" min="0" max="360" value="330" style="width:6em"></label>
+  </div>
+  <div class="row" style="flex-direction:column;align-items:stretch">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span style="color:var(--muted);font-size:12px">Parameter</span>
+      <button id="code-addparam" style="padding:1px 6px;font-size:11px">+ Parameter</button>
+    </div>
+    <div id="code-params"></div>
+  </div>
+  <div class="row" style="flex-direction:column;align-items:stretch">
+    <span style="color:var(--muted);font-size:12px">Python (Rumpf der Funktion, ohne <code>def</code>)</span>
+    <textarea id="code-body" rows="12" spellcheck="false"
+      style="width:100%;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;
+             background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:8px"></textarea>
+    <span style="color:var(--muted);font-size:11px;margin-top:4px">
+      verfügbar: <code id="code-available"></code>
+    </span>
+    <span style="color:var(--warn);font-size:11px;margin-top:4px">
+      Jede Schleife muss ein <code>await</code> enthalten (z. B. <code>await asyncio.sleep(0)</code>) —
+      sonst blockiert sie den Server und Stopp wirkt nicht mehr.
+    </span>
+  </div>
+  <div class="msg" id="code-msg"></div>
+  <div class="actions">
+    <button data-close>Abbrechen</button>
+    <button id="code-check">Prüfen</button>
+    <button id="code-ok" class="primary">Speichern</button>
+  </div>
+</dialog>
+
 <dialog id="dlg-make">
   <h3>Make a block from selection</h3>
   <div class="row"><label>Name <input id="make-name" placeholder="warn and turn"></label></div>
@@ -504,22 +550,25 @@
     } catch (e) { $("#make-msg").textContent = e.message; }
   };
 
-  // Blockly creates procedure call blocks with empty argument sockets. An empty
-  // socket generates None, which only fails once the program runs, so fill them
-  // with a shadow number the way the built-in loop blocks do.
+  // Procedure calls and custom blocks are created with empty argument sockets.
+  // An empty socket generates None, which only fails once the program runs, so
+  // fill them with a shadow number the way the built-in loop blocks do.
   const CALL_TYPES = new Set(["procedures_callnoreturn", "procedures_callreturn"]);
+  const takesArguments = type => CALL_TYPES.has(type) || customBlocks.some(d => d.name === type);
 
   function fillEmptyCallArgs() {
     let added = false;
     Blockly.Events.disable();
     try {
       for (const block of workspace.getAllBlocks(false)) {
-        if (!CALL_TYPES.has(block.type)) continue;
+        if (!takesArguments(block.type)) continue;
         for (const input of block.inputList) {
           if (input.connection?.type !== Blockly.ConnectionType.INPUT_VALUE) continue;
           if (input.connection.targetBlock()) continue;
+          const definition = customBlocks.find(d => d.name === block.type);
+          const param = definition?.params?.find(p => p.name.toUpperCase() === input.name);
           const shadow = workspace.newBlock("math_number");
-          shadow.setFieldValue(1, "NUM");
+          shadow.setFieldValue(param?.default ?? 1, "NUM");
           shadow.setShadow(true);
           shadow.initSvg();
           input.connection.connect(shadow.outputConnection);
@@ -568,15 +617,147 @@
     renderCustomList();
   }
 
+  const small = "padding:1px 6px;font-size:11px";
+
   function renderCustomList() {
-    $("#customlist").replaceChildren(...customBlocks.map(d => el("div", { class: "param-row", style: "justify-content:space-between;padding:4px 0;border-top:1px solid var(--line)" },
-      el("span", {}, el("b", { style: "color:var(--fg)" }, d.name), d.params?.length ? ` (${d.params.map(p => p.name).join(", ")})` : "", d.shipped ? " · shipped" : ""),
-      el("button", { class: "danger", style: "padding:1px 6px;font-size:11px", onclick: async () => {
+    const rows = customBlocks.map(d => {
+      const isPython = d.mode === "python";
+      const canRegenerate = isPython && !!d.workspace?.blocks?.blocks?.length;
+      const actions = [
+        el("button", { style: small, onclick: () => openCodeDialog(d) },
+           isPython ? "Python bearbeiten" : "In Python umwandeln"),
+      ];
+      if (canRegenerate) {
+        actions.push(el("button", { style: small, onclick: () => regenerate(d) }, "Aus Blöcken neu erzeugen"));
+      }
+      actions.push(el("button", { class: "danger", style: small, onclick: async () => {
         try { await api("/api/blocks/custom/" + encodeURIComponent(d.name), null, "DELETE"); await reloadCustom(); }
         catch (e) { alert(e.message); }
-      } }, "Delete"))));
-    if (!customBlocks.length) $("#customlist").textContent = "no custom blocks yet";
+      } }, "Löschen"));
+      return el("div", { style: "display:flex;gap:6px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:5px 0;border-top:1px solid var(--line);font-size:12px;color:var(--muted)" },
+        el("span", {},
+           el("b", { style: "color:var(--fg)" }, d.name),
+           d.params?.length ? ` (${d.params.map(p => p.name).join(", ")})` : "",
+           isPython ? el("span", { style: "color:var(--accent);margin-left:6px" }, "Python") : "",
+           d.shipped ? " · shipped" : ""),
+        el("span", { style: "display:flex;gap:4px" }, ...actions));
+    });
+    $("#customlist").replaceChildren(
+      el("div", { style: "display:flex;justify-content:flex-end;margin-bottom:6px" },
+         el("button", { style: small, onclick: () => openCodeDialog(null) }, "+ Neuer Python-Baustein")),
+      ...rows);
+    if (!customBlocks.length) $("#customlist").append(el("div", { style: "color:var(--muted);padding-top:6px" }, "noch keine eigenen Bausteine"));
   }
+
+  async function regenerate(definition) {
+    // A <dialog> rather than confirm(): some embedded browsers refuse the
+    // native prompts outright.
+    $("#regen-name").textContent = definition.name;
+    const dlg = $("#dlg-regen");
+    dlg.returnValue = "";
+    dlg.showModal();
+    await new Promise(resolve => dlg.addEventListener("close", resolve, { once: true }));
+    if (dlg.returnValue !== "ok") return;
+    try {
+      await api(`/api/blocks/custom/${encodeURIComponent(definition.name)}/regenerate`);
+      await reloadCustom();
+      scheduleCode();
+    } catch (e) { alert(e.message); }
+  }
+
+  // ------------------------------------------------------- the code dialog
+
+  let editing = null;   // the block being edited, or null for a new one
+
+  async function openCodeDialog(definition) {
+    editing = definition;
+    const dlg = $("#dlg-code");
+    $("#code-msg").textContent = "";
+    $("#code-name").value = definition?.name ?? "";
+    $("#code-name").disabled = !!definition;
+    $("#code-colour").value = definition?.colour ?? 330;
+    renderCodeParams(definition?.params ?? []);
+    $("#code-title").textContent = definition
+      ? (definition.mode === "python" ? `"${definition.name}" bearbeiten` : `"${definition.name}" in Python umwandeln`)
+      : "Neuer Python-Baustein";
+    $("#code-body").value = "";
+    if (definition) {
+      try {
+        const info = await api(`/api/blocks/custom/${encodeURIComponent(definition.name)}/body`, null, "GET");
+        $("#code-body").value = info.code;
+      } catch (e) { $("#code-msg").textContent = e.message; }
+    }
+    updateParamHint();
+    dlg.showModal();
+    $("#code-body").focus();
+  }
+
+  function renderCodeParams(params) {
+    const box = $("#code-params");
+    box.replaceChildren(...params.map(p => paramRow(p.name, p.default ?? 1)));
+    updateParamHint();
+  }
+
+  function paramRow(name = "", dflt = 1) {
+    const row = el("div", { class: "param-row" },
+      el("input", { value: name, placeholder: "name", style: "width:9em", oninput: updateParamHint }),
+      el("input", { type: "number", value: dflt, style: "width:5em", title: "Vorgabewert" }),
+      el("button", { style: small, onclick: e => { e.preventDefault(); row.remove(); updateParamHint(); } }, "×"));
+    return row;
+  }
+
+  function codeParams() {
+    return [...$("#code-params").children].map(row => {
+      const [name, dflt] = row.querySelectorAll("input");
+      return { name: name.value.trim(), default: Number(dflt.value) || 0 };
+    }).filter(p => p.name);
+  }
+
+  function updateParamHint() {
+    const names = codeParams().map(p => p.name.replace(/[^a-zA-Z0-9]+/g, "_").toLowerCase());
+    $("#code-available").textContent = ["mip", "sensors", "asyncio", ...names].join(", ");
+  }
+
+  $("#regen-ok").onclick = () => $("#dlg-regen").close("ok");
+
+  $("#code-addparam").onclick = e => { e.preventDefault(); $("#code-params").append(paramRow()); updateParamHint(); };
+
+  // Tab should indent, not jump out of the text area.
+  $("#code-body").addEventListener("keydown", e => {
+    if (e.key !== "Tab") return;
+    e.preventDefault();
+    const ta = e.target, { selectionStart: a, selectionEnd: b } = ta;
+    ta.value = ta.value.slice(0, a) + "    " + ta.value.slice(b);
+    ta.selectionStart = ta.selectionEnd = a + 4;
+  });
+
+  $("#code-check").onclick = async e => {
+    e.preventDefault();
+    try {
+      await api("/api/blocks/check", { code: $("#code-body").value, params: codeParams() });
+      $("#code-msg").style.color = "var(--ok)";
+      $("#code-msg").textContent = "sieht gut aus";
+    } catch (err) {
+      $("#code-msg").style.color = "var(--bad)";
+      $("#code-msg").textContent = err.message;
+    }
+  };
+
+  $("#code-ok").onclick = async () => {
+    const name = $("#code-name").value.trim();
+    $("#code-msg").style.color = "var(--bad)";
+    if (!name) { $("#code-msg").textContent = "Name fehlt"; return; }
+    try {
+      await api("/api/blocks/custom", {
+        name, colour: Number($("#code-colour").value) || 330,
+        params: codeParams(), mode: "python", code: $("#code-body").value,
+        create: !editing,
+      });
+      $("#dlg-code").close();
+      await reloadCustom();
+      scheduleCode();
+    } catch (e) { $("#code-msg").textContent = e.message; }
+  };
 
   // ------------------------------------------------------------------ boot
   (async () => {
