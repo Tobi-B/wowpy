@@ -1,0 +1,12 @@
+{
+  "name": "Blinkfolge",
+  "colour": 330,
+  "params": [
+    {
+      "name": "wie oft",
+      "default": 3
+    }
+  ],
+  "mode": "python",
+  "code": "for i in range(wie_oft):\n    await mip.set_chest_led(255, 0, 0)\n    await asyncio.sleep(0.05)\n    await mip.set_chest_led(0, 0, 255)\n    await asyncio.sleep(0.05)"
+}
