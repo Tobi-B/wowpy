@@ -49,7 +49,7 @@ def test_sensors_endpoint_describes_every_lane(client):
 
 def test_each_sensor_says_how_to_draw_it(client):
     for sensor in client.get("/api/sensors").json()["sensors"]:
-        assert sensor["kind"] in ("line", "band", "marker", "colour", "leds")
+        assert sensor["kind"] in ("line", "steps", "band", "marker", "colour", "leds")
         assert sensor["label"] and sensor["field"]
         assert "poll" not in sensor          # an internal detail
 
@@ -202,3 +202,27 @@ def test_charting_without_a_connection_does_not_crash(client):
         ws.send_json({"type": "chart", "sensors": ["battery"]})
         time.sleep(0.3)
         assert server.hub.chart_keys() == {"battery"}
+
+
+# -- radar is three ordered buckets, not a distance -------------------------
+
+def test_radar_is_drawn_as_a_staircase(client):
+    """The MiP reports one of three classes, never a distance.
+
+    A free line would imply a precision the sensor does not have; a colour
+    band would hide that the three states are ordered.
+    """
+    radar = next(s for s in client.get("/api/sensors").json()["sensors"] if s["key"] == "radar")
+    assert radar["kind"] == "steps"
+    assert list(radar["levels"].values()) == ["frei", "10-30", "<10"]
+    assert {int(k) for k in radar["levels"]} == {int(k) for k in radar["states"]}
+
+
+def test_event_only_sensors_are_flagged_for_the_page(client):
+    """A value from an event holds until the next one; a missing poll is a gap."""
+    sensors = {s["key"]: s for s in client.get("/api/sensors").json()["sensors"]}
+    assert sensors["radar"]["event_only"] is True
+    assert sensors["gesture"]["event_only"] is True
+    assert sensors["claps"]["event_only"] is True
+    assert sensors["battery"]["event_only"] is False
+    assert sensors["weight"]["event_only"] is False

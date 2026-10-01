@@ -29,7 +29,7 @@ position markers.
 | Weight / tilt | `0x81` | line, −128…127 — the one sensor fast enough to show balancing |
 | Volume | `0x16` | line, 0–7 |
 | Game mode | `0x82` | state band |
-| Radar | `0x0C` event | state band (no object / 10–30 cm / < 10 cm) |
+| Radar | `0x0C` event | **staircase** over three ordered levels. The MiP reports one of three classes, never a distance, so a free line would imply a precision it does not have - but the classes are ordered, which a colour band would hide. |
 | Gesture | `0x0A` event | markers on a band |
 | Claps | `0x1D` event | markers with the count |
 | Chest LED | `0x83` | band in the actual colour |

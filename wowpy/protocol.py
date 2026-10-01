@@ -397,8 +397,10 @@ CHART_SENSORS = (
      "poll": CMD_GET_VOLUME, "min": 0, "max": 7},
     {"key": "game_mode", "label": "Spielmodus", "kind": "band", "field": "game_mode",
      "poll": CMD_GET_GAME_MODE, "states": GAME_MODES},
-    {"key": "radar", "label": "Radar", "kind": "band", "field": "radar",
-     "poll": None, "states": RADAR},
+    # Three ordered buckets, not a distance: a staircase shows an approach,
+    # which a colour band would hide.
+    {"key": "radar", "label": "Radar", "kind": "steps", "field": "radar",
+     "poll": None, "states": RADAR, "levels": {1: "frei", 2: "10-30", 3: "<10"}},
     {"key": "gesture", "label": "Geste", "kind": "marker", "field": "gesture",
      "poll": None, "states": GESTURES},
     {"key": "claps", "label": "Klatschen", "kind": "marker", "field": "claps", "poll": None},

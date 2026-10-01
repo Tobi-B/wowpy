@@ -417,8 +417,11 @@ async def commands():
 @app.get("/api/sensors")
 async def sensors():
     """What the time chart can show, and how to draw each one (US-007)."""
-    return {"sensors": [{k: v for k, v in s.items() if k != "poll"} for s in p.CHART_SENSORS],
-            "interval": CHART_INTERVAL, "window_minutes": 60}
+    # "event_only" tells the page a value holds until the next event, rather
+    # than a missing sample meaning the robot stopped answering.
+    sensors = [{**{k: v for k, v in s.items() if k != "poll"}, "event_only": s["poll"] is None}
+               for s in p.CHART_SENSORS]
+    return {"sensors": sensors, "interval": CHART_INTERVAL, "window_minutes": 60}
 
 
 @app.post("/api/scan")
