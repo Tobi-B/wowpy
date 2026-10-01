@@ -54,8 +54,15 @@
   #indicator.disconnected { color: var(--muted); }
   #devices { min-width: 220px; }
   #trend { grid-column: 1 / -1; }
-  #trend canvas { width: 100%; height: 110px; display: block; background: var(--bg); border-radius: 6px; border: 1px solid var(--line); }
+  #trend canvas { width: 100%; display: block; background: var(--bg); border-radius: 6px; border: 1px solid var(--line); }
   #trend .legend { font-size: 11px; color: var(--muted); margin-top: 3px; display: flex; gap: 14px; }
+  #chartbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; margin-bottom: 5px; }
+  #chartbar label { display: inline-flex; gap: 3px; align-items: center; color: var(--muted); cursor: pointer; }
+  #chartbar label input { accent-color: var(--accent); }
+  #chartbar label.on { color: var(--fg); }
+  #chartempty { display: none; color: var(--muted); font-size: 12px; padding: 18px 0; text-align: center; }
+  #chartempty.show { display: block; }
+  #chartempty.show ~ canvas { display: none; }
 
   main { display: grid; grid-template-columns: 1fr 380px; gap: 16px; padding: 16px; }
   #panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; align-content: start; }
@@ -111,8 +118,13 @@
     <div class="row"><button id="refresh" disabled>Refresh now</button><span id="lastupdate" style="color:var(--muted)"></span></div>
   </div>
   <div id="trend">
-    <canvas id="chart" height="110"></canvas>
-    <div class="legend"><span>▬ battery %</span><span id="poslegend"></span><span style="margin-left:auto">last 60 min</span></div>
+    <div id="chartbar">
+      <button id="chart-toggle" style="padding:1px 8px;font-size:11px">Grafik ausblenden</button>
+      <span id="chart-boxes" style="display:flex;gap:10px;flex-wrap:wrap"></span>
+    </div>
+    <div id="chartempty">keine Sensoren ausgewählt</div>
+    <canvas id="chart" height="150"></canvas>
+    <div class="legend"><span id="chartinfo"></span><span style="margin-left:auto">letzte 60 min</span></div>
   </div>
 </header>
 
@@ -147,7 +159,6 @@
   let connected = false;
   let connectedAt = null;
   const status = {};
-  const trend = { battery: [], position: [] };   // [t, value]
   const posChanges = [];       // timestamps of position changes
   let lastPos = null;
   let ws = null;
@@ -225,7 +236,13 @@
     } else setField("signal", c.state !== "disconnected" ? "n/a" : "—");
     const was = connected;
     connected = c.state === "connected";
-    if (connected && !was) { connectedAt = Date.now(); trend.battery.length = 0; trend.position.length = 0; posChanges.length = 0; lastPos = null; }
+    if (connected && !was) {
+      connectedAt = Date.now(); disconnectedAt = null; lastPos = null;
+      posChanges.length = 0;
+      for (const key of Object.keys(series)) delete series[key];
+      sendChartSelection();
+    }
+    if (!connected && was) disconnectedAt = Date.now();
     if (!connected) stopDrive(false);
     document.querySelectorAll("[data-needs-connection]").forEach(b => { b.disabled = !connected || b.dataset.invalid === "1"; b.title = connected ? "" : HINT; });
     $("#disconnect").disabled = !connected;
@@ -245,27 +262,178 @@
   }
   setInterval(tickPosChanges, 500);
 
-  // ------------------------------------------------------------ trend chart
+  // ----------------------------------------------------------- sensor chart
+  // One lane per ticked sensor, each with its own scale, on a shared time
+  // axis (US-007). Lines for numbers, coloured bands for states.
   const WINDOW = 60 * 60 * 1000;
-  function drawChart() {
-    const cv = $("#chart"); const w = cv.clientWidth; if (cv.width !== w) cv.width = w;
-    const h = cv.height, ctx = cv.getContext("2d");
-    ctx.clearRect(0, 0, w, h);
-    const now = Date.now();
-    for (const k of ["battery", "position"]) while (trend[k].length && now - trend[k][0][0] > WINDOW) trend[k].shift();
-    if (!connectedAt) return;
-    const t0 = Math.max(connectedAt, now - WINDOW), span = Math.max(now - t0, 10000);
-    const x = t => 8 + (t - t0) / span * (w - 16);
-    const y = v => 8 + (100 - v) / 100 * (h - 34);
-    ctx.strokeStyle = "#333a45"; ctx.lineWidth = 1;
-    for (const v of [0, 50, 100]) { ctx.beginPath(); ctx.moveTo(8, y(v)); ctx.lineTo(w - 8, y(v)); ctx.stroke(); }
-    ctx.fillStyle = "#8b95a5"; ctx.font = "10px system-ui"; ctx.fillText("100", 10, y(100) + 9); ctx.fillText("0", 10, y(0) - 2);
-    ctx.strokeStyle = "#3ddc84"; ctx.lineWidth = 2; ctx.beginPath();
-    trend.battery.forEach(([t, v], i) => i ? ctx.lineTo(x(t), y(v)) : ctx.moveTo(x(t), y(v)));
-    ctx.stroke();
-    for (const [t, v] of trend.battery) { ctx.fillStyle = v < BATTERY_WARN ? "#ff5d5d" : "#3ddc84"; ctx.fillRect(x(t) - 1.5, y(v) - 1.5, 3, 3); }
-    for (const [t, pos] of trend.position) { ctx.fillStyle = POS_COLORS[pos] ?? "#fff"; ctx.fillRect(x(t) - 1, h - 22, 2, 16); }
+  const LANE_H = 42, LANE_GAP = 6, PAD_L = 54, PAD_R = 8, PAD_T = 6, AXIS_H = 16;
+  const GAP_FACTOR = 3;          // a hole wider than this * the interval breaks the line
+
+  let sensorMeta = [], chartInterval = 1, chartOpen = true;
+  let picked = new Set(["battery", "position"]);
+  const series = {};             // key -> [[t, value], ...]
+  let disconnectedAt = null;
+
+  try {
+    const saved = JSON.parse(localStorage.getItem("mip.chart") || "null");
+    if (Array.isArray(saved)) picked = new Set(saved);
+  } catch { /* no stored selection, keep the default */ }
+
+  function rememberPicked() {
+    try { localStorage.setItem("mip.chart", JSON.stringify([...picked])); } catch { /* private mode */ }
   }
+
+  function sendChartSelection() {
+    if (ws?.readyState === 1) {
+      ws.send(JSON.stringify({ type: "chart", sensors: chartOpen ? [...picked] : [] }));
+    }
+  }
+
+  function buildChartBoxes() {
+    $("#chart-boxes").replaceChildren(...sensorMeta.map(sensor => {
+      const box = el("input", { type: "checkbox", "data-sensor": sensor.key });
+      box.checked = picked.has(sensor.key);
+      const label = el("label", { class: box.checked ? "on" : "" }, box, sensor.label);
+      box.onchange = () => {
+        box.checked ? picked.add(sensor.key) : picked.delete(sensor.key);
+        label.classList.toggle("on", box.checked);
+        rememberPicked(); sendChartSelection(); drawChart();
+      };
+      return label;
+    }));
+  }
+
+  $("#chart-toggle").onclick = () => {
+    chartOpen = !chartOpen;
+    $("#chart-toggle").textContent = chartOpen ? "Grafik ausblenden" : "Grafik einblenden";
+    $("#chart").style.display = chartOpen ? "" : "none";
+    $("#chartempty").classList.toggle("show", chartOpen && picked.size === 0);
+    sendChartSelection();
+  };
+
+  function record(fields, now) {
+    for (const sensor of sensorMeta) {
+      const value = fields[sensor.field];
+      if (value === undefined) continue;
+      (series[sensor.key] ||= []).push([now, value]);
+    }
+  }
+
+  const PALETTE = ["#4da3ff", "#3ddc84", "#ffb347", "#ff5d5d", "#c77dff", "#ff5da6", "#00d5c8"];
+
+  function laneColour(sensor, value) {
+    if (sensor.key === "position") return POS_COLORS[value] ?? "#8b95a5";
+    if (sensor.kind === "colour" && Array.isArray(value)) return `rgb(${value[0]}, ${value[1]}, ${value[2]})`;
+    return PALETTE[Number(value) % PALETTE.length];
+  }
+
+  function bounds(sensor, points) {
+    if (sensor.min !== undefined && sensor.max !== undefined) return [sensor.min, sensor.max];
+    const values = points.map(([, v]) => Number(v)).filter(Number.isFinite);
+    if (!values.length) return [0, 1];
+    let lo = Math.min(...values), hi = Math.max(...values);
+    if (lo === hi) { lo -= 1; hi += 1; }
+    const margin = (hi - lo) * 0.1;
+    return [lo - margin, hi + margin];
+  }
+
+  function drawChart() {
+    const canvas = $("#chart");
+    const lanes = sensorMeta.filter(s => picked.has(s.key));
+    $("#chartempty").classList.toggle("show", chartOpen && lanes.length === 0);
+    $("#chartinfo").textContent = lanes.length
+      ? `${lanes.length} Spur${lanes.length > 1 ? "en" : ""}, Abtastung ${chartInterval} s` : "";
+    if (!chartOpen || !lanes.length) return;
+
+    const width = canvas.clientWidth || 600;
+    const height = PAD_T + lanes.length * (LANE_H + LANE_GAP) + AXIS_H;
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) { canvas.height = height; canvas.style.height = height + "px"; }
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, width, height);
+    if (!connectedAt) return;
+
+    const now = Date.now();
+    for (const key of Object.keys(series)) {
+      while (series[key].length && now - series[key][0][0] > WINDOW) series[key].shift();
+    }
+    const t0 = Math.max(connectedAt, now - WINDOW), span = Math.max(now - t0, 10000);
+    const x = t => PAD_L + (t - t0) / span * (width - PAD_L - PAD_R);
+
+    lanes.forEach((sensor, i) => {
+      const top = PAD_T + i * (LANE_H + LANE_GAP);
+      ctx.strokeStyle = "#262b34"; ctx.lineWidth = 1;
+      ctx.strokeRect(PAD_L + 0.5, top + 0.5, width - PAD_L - PAD_R - 1, LANE_H - 1);
+      ctx.fillStyle = "#8b95a5"; ctx.font = "10px system-ui"; ctx.textAlign = "right";
+      ctx.fillText(sensor.label, PAD_L - 6, top + 12);
+      drawLane(ctx, sensor, series[sensor.key] || [], top, x);
+    });
+
+    const axisY = PAD_T + lanes.length * (LANE_H + LANE_GAP) + 11;
+    ctx.fillStyle = "#8b95a5"; ctx.font = "10px system-ui";
+    ctx.textAlign = "left"; ctx.fillText(new Date(t0).toLocaleTimeString(), PAD_L, axisY);
+    ctx.textAlign = "right"; ctx.fillText("jetzt", width - PAD_R, axisY);
+
+    if (disconnectedAt && disconnectedAt > t0) {
+      ctx.fillStyle = "rgba(139,149,165,0.14)";
+      ctx.fillRect(x(disconnectedAt), PAD_T, width - PAD_R - x(disconnectedAt),
+                   lanes.length * (LANE_H + LANE_GAP));
+    }
+  }
+
+  function drawLane(ctx, sensor, points, top, x) {
+    if (!points.length) return;
+    const maxGap = chartInterval * 1000 * GAP_FACTOR;
+
+    if (sensor.kind === "line") {
+      const [lo, hi] = bounds(sensor, points);
+      const y = v => top + LANE_H - 4 - (Number(v) - lo) / (hi - lo) * (LANE_H - 8);
+      ctx.textAlign = "right"; ctx.fillStyle = "#555e6b"; ctx.font = "9px system-ui";
+      ctx.fillText(Math.round(hi), PAD_L - 6, top + 23);
+      ctx.fillText(Math.round(lo), PAD_L - 6, top + LANE_H - 3);
+      ctx.strokeStyle = "#4da3ff"; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      let pen = false;
+      for (let i = 0; i < points.length; i++) {
+        const [t, v] = points[i];
+        // A hole means the robot was not answering - show it rather than
+        // drawing a straight line across it.
+        if (pen && t - points[i - 1][0] > maxGap) pen = false;
+        pen ? ctx.lineTo(x(t), y(v)) : ctx.moveTo(x(t), y(v));
+        pen = true;
+      }
+      ctx.stroke();
+      if (sensor.warn_below !== undefined) {
+        ctx.fillStyle = "#ff5d5d";
+        for (const [t, v] of points) if (v < sensor.warn_below) ctx.fillRect(x(t) - 1.5, y(v) - 1.5, 3, 3);
+      }
+      return;
+    }
+
+    for (let i = 0; i < points.length; i++) {
+      const [t, value] = points[i];
+      const next = points[i + 1];
+      if (sensor.kind === "marker") {
+        ctx.fillStyle = "#ffb347";
+        ctx.fillRect(x(t) - 1, top + 6, 2, LANE_H - 12);
+        ctx.textAlign = "left"; ctx.font = "9px system-ui";
+        ctx.fillText(String(sensor.states?.[value] ?? value), x(t) + 3, top + 14);
+        continue;
+      }
+      const until = next && next[0] - t <= maxGap ? next[0] : Math.min(t + maxGap, Date.now());
+      const w = Math.max(1, x(until) - x(t));
+      if (sensor.kind === "leds" && Array.isArray(value)) {
+        value.slice(0, 4).forEach((state, k) => {
+          ctx.fillStyle = state ? "#3ddc84" : "#2b313a";
+          ctx.fillRect(x(t), top + 5 + k * 8, w, 6);
+        });
+      } else {
+        ctx.fillStyle = laneColour(sensor, value);
+        ctx.fillRect(x(t), top + 8, w, LANE_H - 16);
+      }
+    }
+  }
+
   setInterval(drawChart, 1000);
   window.addEventListener("resize", drawChart);
 
@@ -284,6 +452,7 @@
   // ------------------------------------------------------------- WebSocket
   function openWs() {
     ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+    ws.onopen = () => sendChartSelection();
     ws.onmessage = ev => handle(JSON.parse(ev.data));
     ws.onclose = () => { renderConnection({ state: "disconnected" }); setTimeout(openWs, 1000); };
   }
@@ -291,10 +460,10 @@
     Object.assign(status, fields);
     if (lastUpdate) status.last_update = Date.parse(lastUpdate);
     const now = Date.now();
-    if (fields.battery !== undefined) trend.battery.push([now, fields.battery]);
+    record(fields, now);
     if (fields.position !== undefined && fields.position !== lastPos) {
       if (lastPos !== null) posChanges.push(now);
-      lastPos = fields.position; trend.position.push([now, fields.position]);
+      lastPos = fields.position;
     }
     renderStatus(); tickPosChanges();
   }
@@ -419,12 +588,15 @@
       for (const c of meta.commands.filter(c => c.family === fam)) panel.append(c.name === "Drive" ? drivePad(c) : commandRow(c));
       root.append(panel);
     }
-    $("#poslegend").replaceChildren(...Object.entries(meta.positions).map(([k, v]) => el("span", { style: `color:${POS_COLORS[k]}` }, `▮ ${v}`)));
   }
 
   // ------------------------------------------------------------------ boot
   (async () => {
     meta = await api("/api/commands", null, "GET");
+    const chartMeta = await api("/api/sensors", null, "GET");
+    sensorMeta = chartMeta.sensors;
+    chartInterval = chartMeta.interval;
+    buildChartBoxes();
     buildPanels();
     fillDevices([{ name: "Mock MiP", address: "00:00:00:00:00:00", rssi: null }]);
     renderConnection({ state: "disconnected" });

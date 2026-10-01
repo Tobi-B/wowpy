@@ -26,6 +26,7 @@ from ..storage import NAME_HINT, NameError_, NameTaken, Store
 STATIC = Path(__file__).parent / "static"
 
 POLL_INTERVAL = 5.0
+CHART_INTERVAL = 1.0         # faster sampling while the chart is open (US-007)
 DRIVE_HOLDOFF = 0.3          # seconds after the last drive packet during which polling is paused
 QUERY_TIMEOUT = 1.5
 
@@ -64,6 +65,8 @@ class Hub:
         self.sockets = set()
         self.poll_task = None
         self.last_drive = 0.0
+        self.chart = {}              # websocket -> set of charted sensor keys
+        self.chart_task = None
         self.lock = asyncio.Lock()
         self.scan_cache = []
         self.store = Store()
@@ -126,9 +129,11 @@ class Hub:
         self.push_connection()
         if self.program is not None and self.program.state == "running":
             self.program.stop("stopped (disconnected)")
-        if self.poll_task:
-            self.poll_task.cancel()
-            self.poll_task = None
+        for task in ("poll_task", "chart_task"):
+            running = getattr(self, task)
+            if running:
+                running.cancel()
+                setattr(self, task, None)
 
     # -- connection ---------------------------------------------------------
 
@@ -172,11 +177,14 @@ class Hub:
             self.log("info", f"connected to {self.device['name']}")
             self.push_connection()
             self.poll_task = asyncio.create_task(self._poll_loop())
+            self.chart_task = asyncio.create_task(self._chart_loop())
 
     async def _disconnect(self):
-        if self.poll_task:
-            self.poll_task.cancel()
-            self.poll_task = None
+        for task in ("poll_task", "chart_task"):
+            running = getattr(self, task)
+            if running:
+                running.cancel()
+                setattr(self, task, None)
         mip, self.mip = self.mip, None
         if mip is not None:
             mip.on_disconnect = None
@@ -242,13 +250,56 @@ class Hub:
             await self.refresh(ONCE_OPCODES + POLL_OPCODES)
             while True:
                 await asyncio.sleep(POLL_INTERVAL)
-                while time.monotonic() - self.last_drive < DRIVE_HOLDOFF:
-                    await asyncio.sleep(0.1)
-                await self.refresh()
+                await self._wait_for_idle_link()
+                # Whatever the chart is sampling at 1 s does not need asking
+                # again here.
+                fast = self.chart_opcodes()
+                await self.refresh(tuple(op for op in POLL_OPCODES if op not in fast))
         except asyncio.CancelledError:
             pass
         except Exception as e:
             self.log("error", "poll loop", text=str(e))
+
+    # -- the chart's own, faster sampling (US-007) --------------------------
+
+    def chart_keys(self):
+        """Every sensor any open page is charting."""
+        return set().union(*self.chart.values()) if self.chart else set()
+
+    def chart_opcodes(self):
+        return p.chart_poll_opcodes(self.chart_keys())
+
+    def set_chart(self, socket, keys):
+        """Record what one page is charting; drives the fast poll."""
+        valid = [k for k in keys if k in p.CHART_SENSORS_BY_KEY]
+        if valid:
+            self.chart[socket] = set(valid)
+        else:
+            self.chart.pop(socket, None)
+
+    async def _chart_loop(self):
+        """Sample the charted sensors once a second.
+
+        Only what is ticked is asked for: every extra sensor is another
+        request per second over a link that is already marginal at -80 dBm.
+        """
+        try:
+            while True:
+                await asyncio.sleep(CHART_INTERVAL)
+                opcodes = self.chart_opcodes()
+                if not opcodes:
+                    continue
+                # A 1 s poll must not compete with the 40 ms drive stream.
+                await self._wait_for_idle_link()
+                await self.refresh(opcodes)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.log("error", "chart loop", text=str(e))
+
+    async def _wait_for_idle_link(self):
+        while time.monotonic() - self.last_drive < DRIVE_HOLDOFF:
+            await asyncio.sleep(0.05)
 
     async def drive(self, speed, turn):
         mip = self.require()
@@ -265,7 +316,6 @@ class Hub:
         self.last_drive = 0.0
         await mip.stop()
         self.log("sent", "Stop", bytes([p.CMD_STOP]))
-
 
     # -- block programs ---------------------------------------------------
 
@@ -362,6 +412,13 @@ async def commands():
         "head_led_states": p.HEAD_LED_STATES,
         "gesture_radar_modes": p.GESTURE_RADAR_MODES,
     }
+
+
+@app.get("/api/sensors")
+async def sensors():
+    """What the time chart can show, and how to draw each one (US-007)."""
+    return {"sensors": [{k: v for k, v in s.items() if k != "poll"} for s in p.CHART_SENSORS],
+            "interval": CHART_INTERVAL, "window_minutes": 60}
 
 
 @app.post("/api/scan")
@@ -628,7 +685,9 @@ async def websocket(ws: WebSocket):
             msg = await ws.receive_json()
             kind = msg.get("type")
             try:
-                if kind == "drive":
+                if kind == "chart":
+                    hub.set_chart(ws, msg.get("sensors") or [])
+                elif kind == "drive":
                     await hub.drive(int(msg.get("speed", 0)), int(msg.get("turn", 0)))
                 elif kind == "stop":
                     await hub.stop()
@@ -640,6 +699,7 @@ async def websocket(ws: WebSocket):
         pass
     finally:
         hub.sockets.discard(ws)
+        hub.chart.pop(ws, None)      # its sensors no longer need the fast poll
         # A page going away mid-drive must not leave the robot rolling.
         if hub.mip is not None and time.monotonic() - hub.last_drive < DRIVE_HOLDOFF:
             try:
