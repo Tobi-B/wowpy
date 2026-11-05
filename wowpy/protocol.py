@@ -377,3 +377,51 @@ def decode_reply(data):
         return name, decoder(data[1:])
     except (IndexError, ValueError):
         return name, {"text": data[1:].hex(" ").upper()}
+
+
+# ------------------------------------------------------------ chart sensors
+
+# What the dashboard's time chart can show (user story US-007). "poll" is the
+# opcode to ask for; None means the value only ever arrives as an event.
+# "field" is the key decode_reply() puts into the status dict.
+CHART_SENSORS = (
+    {"key": "battery", "label": "Akku", "kind": "line", "field": "battery",
+     "poll": CMD_GET_STATUS, "unit": "%", "min": 0, "max": 100, "warn_below": 40},
+    {"key": "position", "label": "Lage", "kind": "band", "field": "position",
+     "poll": CMD_GET_STATUS, "states": POSITIONS},
+    {"key": "odometer", "label": "Wegstrecke", "kind": "line", "field": "odometer_cm",
+     "poll": CMD_GET_ODOMETER, "unit": "cm"},
+    {"key": "weight", "label": "Neigung", "kind": "line", "field": "weight_angle",
+     "poll": CMD_GET_WEIGHT, "unit": "°", "min": -90, "max": 90},
+    {"key": "volume", "label": "Lautstärke", "kind": "line", "field": "volume",
+     "poll": CMD_GET_VOLUME, "min": 0, "max": 7},
+    {"key": "game_mode", "label": "Spielmodus", "kind": "band", "field": "game_mode",
+     "poll": CMD_GET_GAME_MODE, "states": GAME_MODES},
+    # Three ordered buckets, not a distance: a staircase shows an approach,
+    # which a colour band would hide.
+    {"key": "radar", "label": "Radar", "kind": "steps", "field": "radar",
+     "poll": None, "states": RADAR, "levels": {1: "frei", 2: "10-30", 3: "<10"}},
+    {"key": "gesture", "label": "Geste", "kind": "marker", "field": "gesture",
+     "poll": None, "states": GESTURES},
+    {"key": "claps", "label": "Klatschen", "kind": "marker", "field": "claps", "poll": None},
+    {"key": "chest_led", "label": "Brust-LED", "kind": "colour", "field": "chest_led",
+     "poll": CMD_GET_CHEST_LED},
+    {"key": "head_leds", "label": "Kopf-LEDs", "kind": "leds", "field": "head_leds",
+     "poll": CMD_GET_HEAD_LEDS, "states": HEAD_LED_STATES},
+)
+
+CHART_SENSORS_BY_KEY = {s["key"]: s for s in CHART_SENSORS}
+
+
+def chart_poll_opcodes(keys):
+    """The opcodes needed to sample ``keys``, each one only once.
+
+    Ordered by the table, not by ``keys``, so a set of sensors always
+    produces the same sequence of requests.
+    """
+    wanted = set(keys)
+    opcodes = []
+    for sensor in CHART_SENSORS:
+        if sensor["key"] in wanted and sensor["poll"] and sensor["poll"] not in opcodes:
+            opcodes.append(sensor["poll"])
+    return tuple(opcodes)

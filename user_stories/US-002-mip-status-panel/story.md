@@ -35,7 +35,7 @@ assumptions.
 | Signal | scan RSSI | dBm with a 0–4 bar icon |
 | Battery | 0x79 | percentage + bar, red below 40 % |
 | Position | 0x79 | text: on back / face down / upright / picked up / hand stand / face down on tray / on back with kickstand |
-| Session trend | 0x79 history | time chart of battery % and position since connect; "position changes in last 5 s" counter, highlighted above 5 (balance wobble) |
+| Session trend | 0x79 history | time chart of battery % and position since connect; "position changes in last 5 s" counter, highlighted above 5 (balance wobble). **Superseded by US-007**, which turns this into one lane per sensor with a checkbox filter. |
 | Volume | 0x16 | 0–7 |
 | Game mode | 0x82 | app / cage / tracking / dance / default / stack / trick / roam |
 | Odometer | 0x85 | cm since last reset, with "Reset" button |
